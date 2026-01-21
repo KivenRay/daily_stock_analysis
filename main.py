@@ -50,6 +50,7 @@ from notification import NotificationService, NotificationChannel, send_daily_re
 from search_service import SearchService, SearchResponse
 from stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from market_analyzer import MarketAnalyzer
+from scanner_cn import scan_market
 
 # 配置日志格式
 LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s'
@@ -504,7 +505,7 @@ class StockAnalysisPipeline:
         4. 发送通知
         
         Args:
-            stock_codes: 股票代码列表（可选，默认使用配置中的自选股）
+            stock_codes: 股票代码列表（可选，默认从扫描器获取）
             dry_run: 是否仅获取数据不分析
             send_notification: 是否发送推送通知
             
@@ -512,14 +513,28 @@ class StockAnalysisPipeline:
             分析结果列表
         """
         start_time = time.time()
-        
-        # 使用配置中的股票列表
+
         if stock_codes is None:
             self.config.refresh_stock_list()
             stock_codes = self.config.stock_list
         
+        # 优先级：命令行传入 > 市场扫描器
         if not stock_codes:
-            logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
+            logger.info("未从命令行指定股票，将从市场扫描器获取...")
+            try:
+                df = scan_market()
+                if df is not None and not df.empty and '代码' in df.columns:
+                    stock_codes = df.head(15)['代码'].tolist()
+                    logger.info(f"市场扫描器发现 {len(df)} 只符合条件的股票，选取前15只进行分析。")
+                else:
+                    logger.warning("市场扫描器未发现符合条件的股票。")
+                    stock_codes = []
+            except Exception as e:
+                logger.error(f"执行市场扫描器时出错: {e}", exc_info=True)
+                stock_codes = []
+
+        if not stock_codes:
+            logger.error("没有要分析的股票列表，任务终止。")
             return []
         
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
@@ -945,17 +960,18 @@ def main() -> int:
             from scheduler import run_with_schedule
             
             def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
+                #run_full_analysis(config, args, stock_codes)
+                scan_market()
             
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
-                run_immediately=True  # 启动时先执行一次
+                run_immediately=False  # 启动时先执行一次
             )
             return 0
         
         # 模式3: 正常单次运行
-        run_full_analysis(config, args, stock_codes)
+        #run_full_analysis(config, args, stock_codes)
         
         logger.info("\n程序执行完成")
         

@@ -30,6 +30,8 @@ from sqlalchemy import (
     select,
     and_,
     desc,
+    Text,
+    Boolean
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -116,6 +118,54 @@ class StockDaily(Base):
             'ma20': self.ma20,
             'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
+        }
+
+class AIStockRecommendation(Base):
+    """AI股票推荐数据模型"""
+    __tablename__ = 'ai_stock_recommendation'
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')
+    stock_code = Column(String(20), nullable=False, comment='股票代码')
+    stock_name = Column(String(100), nullable=False, comment='股票名称')
+    sector = Column(String(100), comment='所属板块')
+    ai_score = Column(Float, comment='AI评分 (0-100分)')
+    core_tags = Column(String(255), comment='AI核心标签 (逗号分隔)')
+    analysis_info = Column(Text, comment='AI分析信息 (详细理由)')
+    buy_price_min = Column(Float, comment='买入价格区间-低')
+    buy_price_max = Column(Float, comment='买入价格区间-高')
+    take_profit_price_min = Column(Float, comment='止盈价格区间-低')
+    take_profit_price_max = Column(Float, comment='止盈价格区间-高')
+    stop_loss_price_min = Column(Float, comment='止损价格区间-低')
+    stop_loss_price_max = Column(Float, comment='止损价格区间-高')
+    is_push_msg = Column(Boolean, default=False, comment='是否已推送消息(0:未推送, 1:已推送)')
+    
+    # 自动记录创建时间
+    created_at = Column(DateTime, default=datetime.now, comment='创建时间')
+    # 自动记录更新时间
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment='更新时间')
+
+    def __repr__(self):
+        return f"<AIStockRecommendation(stock_code={self.stock_code}, stock_name={self.stock_name}, ai_score={self.ai_score})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'id': self.id,
+            'stock_code': self.stock_code,
+            'stock_name': self.stock_name,
+            'sector': self.sector,
+            'ai_score': self.ai_score,
+            'core_tags': self.core_tags,
+            'analysis_info': self.analysis_info,
+            'buy_price_min': self.buy_price_min,
+            'buy_price_max': self.buy_price_max,
+            'take_profit_price_min': self.take_profit_price_min,
+            'take_profit_price_max': self.take_profit_price_max,
+            'stop_loss_price_min': self.stop_loss_price_min,
+            'stop_loss_price_max': self.stop_loss_price_max,
+            'is_push_msg': self.is_push_msg,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
 
@@ -384,6 +434,28 @@ class DatabaseManager:
         
         return saved_count
     
+    def save_ai_recommendation(self, recommendation: AIStockRecommendation) -> AIStockRecommendation:
+        """
+        保存AI股票推荐数据
+        
+        Args:
+            recommendation: AIStockRecommendation 对象
+            
+        Returns:
+            保存后的 AIStockRecommendation 对象（包含 id）
+        """
+        with self.get_session() as session:
+            try:
+                session.add(recommendation)
+                session.commit()
+                session.refresh(recommendation) # 刷新对象以获取数据库生成的ID
+                logger.info(f"成功保存AI推荐数据: {recommendation.stock_code}, ID: {recommendation.id}")
+                return recommendation
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存AI推荐数据失败: {e}", exc_info=True)
+                raise
+
     def get_analysis_context(
         self, 
         code: str,
@@ -506,3 +578,28 @@ if __name__ == "__main__":
     # 测试获取上下文
     context = db.get_analysis_context('600519')
     print(f"分析上下文: {context}")
+
+    # 测试 AIStockRecommendation 保存
+    print("\n=== AIStockRecommendation 测试 ===")
+    try:
+        new_recommendation = AIStockRecommendation(
+            stock_code='600000',
+            stock_name='浦发银行',
+            sector='银行',
+            ai_score=85.50,
+            core_tags='稳健,低估值',
+            analysis_info='浦发银行基本面良好，估值偏低，AI模型判断有上涨潜力。',
+            buy_price_min=7.00,
+            buy_price_max=7.20,
+            take_profit_price_min=8.00,
+            take_profit_price_max=8.50,
+            stop_loss_price_min=6.80,
+            stop_loss_price_max=6.90,
+            is_push_msg=False
+        )
+        saved_rec = db.save_ai_recommendation(new_recommendation)
+        print(f"保存的 AI 推荐: {saved_rec}")
+        assert saved_rec.id is not None
+        print(f"保存成功，ID: {saved_rec.id}")
+    except Exception as e:
+        print(f"保存 AI 推荐失败: {e}")

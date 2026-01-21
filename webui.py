@@ -7,7 +7,7 @@
 
 Usage:
   python webui.py
-  WEBUI_HOST=0.0.0.0 WEBUI_PORT=8000 python webui.py
+  WEBUI_HOST=0.0.0.1 WEBUI_PORT=8000 python webui.py
 """
 
 from __future__ import annotations
@@ -20,7 +20,14 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 import logging
+import json # 导入 json 模块
+from datetime import date, datetime # 导入 date 和 datetime 类型
 
+from storage import get_db, AIStockRecommendation # 导入 get_db 和 AIStockRecommendation
+from scanner_cn import StrongStock # 导入 StrongStock 模型
+from config import get_config # 导入 get_config
+from notification import get_notification_service # 导入 get_notification_service
+from sqlalchemy import select, desc # 导入 select 和 desc
 
 logger = logging.getLogger(__name__)
 
@@ -294,43 +301,205 @@ def _page(current_value: str, message: str | None = None) -> bytes:
 </html>"""
     return body.encode("utf-8")
 
+def strong_stock_to_dict(stock: StrongStock) -> dict:
+    """将 StrongStock ORM 对象转换为字典，处理日期和时间类型"""
+    result = {}
+    for column in stock.__table__.columns:
+        value = getattr(stock, column.name)
+        if isinstance(value, (date, datetime)):
+            result[column.name] = value.isoformat()
+        else:
+            result[column.name] = value
+    return result
 
 class _Handler(BaseHTTPRequestHandler):
+    def _send_json_response(self, data, status_code=HTTPStatus.OK):
+        """发送 JSON 响应"""
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def _send_json_error(self, message, status_code):
+        """发送 JSON 格式的错误响应"""
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": message}).encode("utf-8"))
+
     def do_GET(self) -> None:
-        if self.path not in ("/", ""):
-            self.send_error(HTTPStatus.NOT_FOUND)
+        if self.path == "/":
+            env_text = _read_env_text(_ENV_PATH)
+            current = _extract_stock_list(env_text)
+            payload = _page(current)
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif self.path == "/api/strong_stocks":
+            self._handle_strong_stocks_api()
+        else:
+            self._send_json_error("Not Found", HTTPStatus.NOT_FOUND)
+
+    def _handle_strong_stocks_api(self) -> None:
+        config = get_config()
+        api_key = self.headers.get("X-API-KEY")
+
+        if not config.webui_api_key:
+            self._send_json_error(
+                "API Key 未配置。请在 .env 文件中设置 WEBUI_API_KEY。",
+                HTTPStatus.FORBIDDEN
+            )
             return
 
-        env_text = _read_env_text(_ENV_PATH)
-        current = _extract_stock_list(env_text)
-        payload = _page(current)
+        if not api_key or api_key != config.webui_api_key:
+            self._send_json_error(
+                "无效的 API Key。",
+                HTTPStatus.UNAUTHORIZED
+            )
+            return
 
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        db = get_db()
+        with db.get_session() as session:
+            try:
+                # 1. 获取最新的扫描时间
+                latest_scan_time_query = select(StrongStock.scan_time).order_by(desc(StrongStock.scan_time)).limit(1)
+                latest_scan_time = session.execute(latest_scan_time_query).scalar_one_or_none()
+
+                if not latest_scan_time:
+                    self._send_json_response({"message": "暂无强势股票数据"})
+                    return
+
+                # 2. 获取最新扫描时间的所有强势股票数据
+                strong_stocks_query = select(StrongStock).filter(StrongStock.scan_time == latest_scan_time)
+                strong_stocks = session.execute(strong_stocks_query).scalars().all()
+
+                # 转换为字典列表
+                data = [strong_stock_to_dict(s) for s in strong_stocks]
+                self._send_json_response(data)
+
+            except Exception as e:
+                logger.error(f"获取强势股票数据失败: {e}", exc_info=True)
+                self._send_json_error(
+                    f"服务器内部错误: {str(e)}",
+                    HTTPStatus.INTERNAL_SERVER_ERROR
+                )
 
     def do_POST(self) -> None:
-        if self.path != "/update":
-            self.send_error(HTTPStatus.NOT_FOUND)
+        if self.path == "/update":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            form = parse_qs(raw)
+            stock_list = form.get("stock_list", [""])[0]
+
+            env_text = _read_env_text(_ENV_PATH)
+            updated = _set_stock_list(env_text, stock_list)
+            _write_env_text(_ENV_PATH, updated)
+
+            payload = _page(_normalize_stock_list(stock_list), message="已保存")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif self.path == "/api/ai_recommendations":
+            self._handle_ai_recommendation_post()
+        else:
+            self._send_json_error("Not Found", HTTPStatus.NOT_FOUND)
+
+    def _handle_ai_recommendation_post(self) -> None:
+        config = get_config()
+        api_key = self.headers.get("X-API-KEY")
+
+        if not config.webui_api_key:
+            self._send_json_error(
+                "API Key 未配置。请在 .env 文件中设置 WEBUI_API_KEY。",
+                HTTPStatus.FORBIDDEN
+            )
             return
 
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        raw = self.rfile.read(length).decode("utf-8", errors="replace")
-        form = parse_qs(raw)
-        stock_list = form.get("stock_list", [""])[0]
+        if not api_key or api_key != config.webui_api_key:
+            self._send_json_error(
+                "无效的 API Key。",
+                HTTPStatus.UNAUTHORIZED
+            )
+            return
 
-        env_text = _read_env_text(_ENV_PATH)
-        updated = _set_stock_list(env_text, stock_list)
-        _write_env_text(_ENV_PATH, updated)
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length == 0:
+                self._send_json_error("请求体为空。", HTTPStatus.BAD_REQUEST)
+                return
+            
+            raw_data = self.rfile.read(length).decode("utf-8")
+            request_data = json.loads(raw_data)
+        except json.JSONDecodeError:
+            self._send_json_error("无效的 JSON 格式。", HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as e:
+            self._send_json_error(f"解析请求体失败: {str(e)}", HTTPStatus.BAD_REQUEST)
+            return
 
-        payload = _page(_normalize_stock_list(stock_list), message="已保存")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        # 提取数据并创建 AIStockRecommendation 对象
+        try:
+            recommendation = AIStockRecommendation(
+                stock_code=request_data['stock_code'],
+                stock_name=request_data['stock_name'],
+                sector=request_data.get('sector'),
+                ai_score=request_data.get('ai_score'),
+                core_tags=request_data.get('core_tags'),
+                analysis_info=request_data.get('analysis_info'),
+                buy_price_min=request_data.get('buy_price_min'),
+                buy_price_max=request_data.get('buy_price_max'),
+                take_profit_price_min=request_data.get('take_profit_price_min'),
+                take_profit_price_max=request_data.get('take_profit_price_max'),
+                stop_loss_price_min=request_data.get('stop_loss_price_min'),
+                stop_loss_price_max=request_data.get('stop_loss_price_max'),
+                is_push_msg=request_data.get('is_push_msg', False)
+            )
+        except KeyError as e:
+            self._send_json_error(f"缺少必要的字段: {e}", HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as e:
+            self._send_json_error(f"创建推荐对象失败: {str(e)}", HTTPStatus.BAD_REQUEST)
+            return
+
+        db = get_db()
+        notifier = get_notification_service()
+        
+        try:
+            # 保存到数据库
+            saved_recommendation = db.save_ai_recommendation(recommendation)
+            
+            # 发送通知
+            if not saved_recommendation.is_push_msg: # 只有未推送过的才发送
+                notification_success = notifier.send_ai_recommendation_notification(saved_recommendation)
+                if notification_success:
+                    # 更新数据库中的 is_push_msg 状态
+                    with db.get_session() as session:
+                        saved_recommendation.is_push_msg = True
+                        session.add(saved_recommendation)
+                        session.commit()
+                        logger.info(f"AI推荐 {saved_recommendation.stock_code} 消息推送成功并更新状态。")
+                else:
+                    logger.warning(f"AI推荐 {saved_recommendation.stock_code} 消息推送失败。")
+            else:
+                logger.info(f"AI推荐 {saved_recommendation.stock_code} 已标记为已推送，跳过通知。")
+
+            self._send_json_response({
+                "message": "AI推荐数据保存成功",
+                "id": saved_recommendation.id,
+                "stock_code": saved_recommendation.stock_code
+            }, HTTPStatus.CREATED)
+
+        except Exception as e:
+            logger.error(f"保存或推送AI推荐数据失败: {e}", exc_info=True)
+            self._send_json_error(
+                f"服务器内部错误: {str(e)}",
+                HTTPStatus.INTERNAL_SERVER_ERROR
+            )
 
     def log_message(self, fmt: str, *args) -> None:
         # quiet default http.server logging

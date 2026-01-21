@@ -30,6 +30,7 @@ import requests
 
 from config import get_config
 from analyzer import AnalysisResult
+from storage import AIStockRecommendation # 导入 AIStockRecommendation 模型
 
 logger = logging.getLogger(__name__)
 
@@ -665,7 +666,7 @@ class NotificationService:
                 # 风险提示
                 if result.risk_warning:
                     report_lines.extend([
-                        f"**⚠️ 风险提示**: {result.risk_warning}",
+                        f"**⚠️ 风险提示**：{result.risk_warning}",
                         "",
                     ])
                 
@@ -694,7 +695,7 @@ class NotificationService:
                 "",
             ])
         
-        # 底部（去除免责声明）
+        # 底部信息（去除免责声明）
         report_lines.extend([
             "",
             f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
@@ -1023,6 +1024,64 @@ class NotificationService:
         
         return "\n".join(lines)
     
+    def send_ai_recommendation_notification(self, recommendation: AIStockRecommendation) -> bool:
+        """
+        发送 AI 股票推荐的通知
+        
+        Args:
+            recommendation: AIStockRecommendation 对象
+            
+        Returns:
+            是否发送成功
+        """
+        if not self.is_available():
+            logger.warning("通知服务不可用，跳过 AI 推荐推送")
+            return False
+
+        # 构建 Markdown 消息
+        lines = [
+            f"# 🤖 AI 股票推荐: {recommendation.stock_name} ({recommendation.stock_code})",
+            "",
+            f"---",
+            "",
+            f"**📈 AI 评分**: {recommendation.ai_score:.2f} 分",
+            f"**🏷️ 核心标签**: {recommendation.core_tags or '无'}",
+            f"**📊 所属板块**: {recommendation.sector or '未知'}",
+            "",
+            "---",
+            "",
+            "## 📝 分析信息",
+            "",
+            f"{recommendation.analysis_info or '暂无详细分析。'}",
+            "",
+            "---",
+            "",
+            "## 🎯 交易策略",
+            "",
+            "| 类型 | 价格区间 |",
+            "|------|----------|",
+        ]
+        
+        buy_price = f"{recommendation.buy_price_min:.2f} - {recommendation.buy_price_max:.2f}" if recommendation.buy_price_min and recommendation.buy_price_max else "N/A"
+        take_profit = f"{recommendation.take_profit_price_min:.2f} - {recommendation.take_profit_price_max:.2f}" if recommendation.take_profit_price_min and recommendation.take_profit_price_max else "N/A"
+        stop_loss = f"{recommendation.stop_loss_price_min:.2f} - {recommendation.stop_loss_price_max:.2f}" if recommendation.stop_loss_price_min and recommendation.stop_loss_price_max else "N/A"
+
+        lines.extend([
+            f"| 🟢 买入区间 | {buy_price} |",
+            f"| 🎊 止盈区间 | {take_profit} |",
+            f"| 🛑 止损区间 | {stop_loss} |",
+            "",
+            "---",
+            "",
+            f"*推荐时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            "*AI生成，仅供参考，不构成投资建议*",
+        ])
+
+        content = "\n".join(lines)
+        
+        logger.info(f"正在推送 AI 推荐消息: {recommendation.stock_name} ({recommendation.stock_code})")
+        return self.send(content)
+
     def send_to_wechat(self, content: str) -> bool:
         """
         推送消息到企业微信机器人
@@ -1195,7 +1254,7 @@ class NotificationService:
         logger.info(f"企业微信强制分批发送：共 {total_chunks} 批")
         
         for i, chunk in enumerate(chunks):
-            page_marker = f"\n\n📄 *({i+1}/{total_chunks})*" if total_chunks > 1 else ""
+            page_marker = f"\n\n📄 *({i+1}/{total_chunks})" if total_chunks > 1 else ""
             
             try:
                 if self._send_wechat_message(chunk + page_marker):
@@ -1677,9 +1736,9 @@ class NotificationService:
         html = markdown_text
         
         # 转义 HTML 特殊字符
-        html = html.replace('&', '&amp;')
-        html = html.replace('<', '&lt;')
-        html = html.replace('>', '&gt;')
+        html = html.sub(r'&', '&amp;')
+        html = html.sub(r'<', '&lt;')
+        html = html.sub(r'>', '&gt;')
         
         # 标题 (# ## ###)
         html = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)

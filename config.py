@@ -125,6 +125,7 @@ class Config:
     webui_enabled: bool = False
     webui_host: str = "127.0.0.1"
     webui_port: int = 8000
+    webui_api_key: Optional[str] = None # 新增 WebUI API Key
     
     # 单例实例存储
     _instance: Optional['Config'] = None
@@ -222,6 +223,7 @@ class Config:
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
+            webui_api_key=os.getenv('WEBUI_API_KEY'),
         )
     
     @classmethod
@@ -252,9 +254,6 @@ class Config:
             for code in stock_list_str.split(',')
             if code.strip()
         ]
-
-        if not stock_list:        
-            stock_list = ['000001']
 
         self.stock_list = stock_list
     
