@@ -27,7 +27,7 @@ from storage import get_db, AIStockRecommendation # 导入 get_db 和 AIStockRec
 from scanner_cn import StrongStock # 导入 StrongStock 模型
 from config import get_config # 导入 get_config
 from notification import get_notification_service # 导入 get_notification_service
-from sqlalchemy import select, desc # 导入 select 和 desc
+from sqlalchemy import select, desc, func # 导入 select, desc 和 func
 
 logger = logging.getLogger(__name__)
 
@@ -364,16 +364,23 @@ class _Handler(BaseHTTPRequestHandler):
         db = get_db()
         with db.get_session() as session:
             try:
-                # 1. 获取最新的扫描时间
-                latest_scan_time_query = select(StrongStock.scan_time).order_by(desc(StrongStock.scan_time)).limit(1)
-                latest_scan_time = session.execute(latest_scan_time_query).scalar_one_or_none()
+                # 1. 获取最新的扫描时间（包含时分秒）
+                latest_full_scan_time_query = select(StrongStock.scan_time).order_by(desc(StrongStock.scan_time)).limit(1)
+                latest_full_scan_time = session.execute(latest_full_scan_time_query).scalar_one_or_none()
 
-                if not latest_scan_time:
+                if not latest_full_scan_time:
                     self._send_json_response({"message": "暂无强势股票数据"})
                     return
 
-                # 2. 获取最新扫描时间的所有强势股票数据
-                strong_stocks_query = select(StrongStock).filter(StrongStock.scan_time == latest_scan_time)
+                # 2. 从最新的扫描时间中提取出日期部分
+                latest_date_only = latest_full_scan_time.date()
+
+                # 3. 查询该最新日期下的所有强势股票数据
+                # 使用 func.date() 来比较日期部分
+                strong_stocks_query = select(StrongStock).filter(
+                    func.date(StrongStock.scan_time) == latest_date_only
+                ).order_by(StrongStock.stock_code) # 可以添加一个排序，例如按股票代码
+
                 strong_stocks = session.execute(strong_stocks_query).scalars().all()
 
                 # 转换为字典列表
@@ -442,64 +449,68 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json_error(f"解析请求体失败: {str(e)}", HTTPStatus.BAD_REQUEST)
             return
 
-        # 提取数据并创建 AIStockRecommendation 对象
-        try:
-            recommendation = AIStockRecommendation(
-                stock_code=request_data['stock_code'],
-                stock_name=request_data['stock_name'],
-                sector=request_data.get('sector'),
-                ai_score=request_data.get('ai_score'),
-                core_tags=request_data.get('core_tags'),
-                analysis_info=request_data.get('analysis_info'),
-                buy_price_min=request_data.get('buy_price_min'),
-                buy_price_max=request_data.get('buy_price_max'),
-                take_profit_price_min=request_data.get('take_profit_price_min'),
-                take_profit_price_max=request_data.get('take_profit_price_max'),
-                stop_loss_price_min=request_data.get('stop_loss_price_min'),
-                stop_loss_price_max=request_data.get('stop_loss_price_max'),
-                is_push_msg=request_data.get('is_push_msg', False)
-            )
-        except KeyError as e:
-            self._send_json_error(f"缺少必要的字段: {e}", HTTPStatus.BAD_REQUEST)
-            return
-        except Exception as e:
-            self._send_json_error(f"创建推荐对象失败: {str(e)}", HTTPStatus.BAD_REQUEST)
+        if not isinstance(request_data, list):
+            self._send_json_error("请求体必须是一个 JSON 数组。", HTTPStatus.BAD_REQUEST)
             return
 
         db = get_db()
         notifier = get_notification_service()
         
-        try:
-            # 保存到数据库
-            saved_recommendation = db.save_ai_recommendation(recommendation)
-            
-            # 发送通知
-            if not saved_recommendation.is_push_msg: # 只有未推送过的才发送
-                notification_success = notifier.send_ai_recommendation_notification(saved_recommendation)
-                if notification_success:
-                    # 更新数据库中的 is_push_msg 状态
-                    with db.get_session() as session:
-                        saved_recommendation.is_push_msg = True
-                        session.add(saved_recommendation)
-                        session.commit()
-                        logger.info(f"AI推荐 {saved_recommendation.stock_code} 消息推送成功并更新状态。")
+        success_count = 0
+        failed_items = []
+
+        for item in request_data:
+            try:
+                recommendation = AIStockRecommendation(
+                    stock_code=item['stock_code'],
+                    stock_name=item['stock_name'],
+                    sector=item.get('sector'),
+                    ai_score=item.get('ai_score'),
+                    core_tags=item.get('core_tags'),
+                    analysis_info=item.get('analysis_info'),
+                    buy_price_min=item.get('buy_price_min'),
+                    buy_price_max=item.get('buy_price_max'),
+                    take_profit_price_min=item.get('take_profit_price_min'),
+                    take_profit_price_max=item.get('take_profit_price_max'),
+                    stop_loss_price_min=item.get('stop_loss_price_min'),
+                    stop_loss_price_max=item.get('stop_loss_price_max'),
+                    is_push_msg=item.get('is_push_msg', False)
+                )
+                
+                # 保存到数据库
+                saved_recommendation = db.save_ai_recommendation(recommendation)
+                
+                # 发送通知
+                if not saved_recommendation.is_push_msg:
+                    notification_success = notifier.send_ai_recommendation_notification(saved_recommendation)
+                    if notification_success:
+                        with db.get_session() as session:
+                            saved_recommendation.is_push_msg = True
+                            session.add(saved_recommendation)
+                            session.commit()
+                            logger.info(f"AI推荐 {saved_recommendation.stock_code} 消息推送成功并更新状态。")
+                    else:
+                        logger.warning(f"AI推荐 {saved_recommendation.stock_code} 消息推送失败。")
                 else:
-                    logger.warning(f"AI推荐 {saved_recommendation.stock_code} 消息推送失败。")
-            else:
-                logger.info(f"AI推荐 {saved_recommendation.stock_code} 已标记为已推送，跳过通知。")
+                    logger.info(f"AI推荐 {saved_recommendation.stock_code} 已标记为已推送，跳过通知。")
+                
+                success_count += 1
 
+            except KeyError as e:
+                failed_items.append({"item": item, "error": f"缺少必要的字段: {e}"})
+            except Exception as e:
+                failed_items.append({"item": item, "error": f"处理失败: {str(e)}"})
+                logger.error(f"处理AI推荐数据失败: {item}", exc_info=True)
+
+        if not failed_items:
             self._send_json_response({
-                "message": "AI推荐数据保存成功",
-                "id": saved_recommendation.id,
-                "stock_code": saved_recommendation.stock_code
+                "message": f"成功处理 {success_count} 条AI推荐数据。",
             }, HTTPStatus.CREATED)
-
-        except Exception as e:
-            logger.error(f"保存或推送AI推荐数据失败: {e}", exc_info=True)
-            self._send_json_error(
-                f"服务器内部错误: {str(e)}",
-                HTTPStatus.INTERNAL_SERVER_ERROR
-            )
+        else:
+            self._send_json_response({
+                "message": f"处理完成，成功 {success_count} 条，失败 {len(failed_items)} 条。",
+                "failed_items": failed_items
+            }, HTTPStatus.MULTI_STATUS)
 
     def log_message(self, fmt: str, *args) -> None:
         # quiet default http.server logging
