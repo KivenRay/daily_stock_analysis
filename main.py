@@ -14,14 +14,10 @@ A股自选股智能分析系统 - 主调度程序
     python main.py              # 正常运行
     python main.py --debug      # 调试模式
     python main.py --dry-run    # 仅获取数据不分析
-
-交易理念（已融入分析）：
-- 严进策略：不追高，乖离率 > 5% 不买入
-- 趋势交易：只做 MA5>MA10>MA20 多头排列
-- 效率优先：关注筹码集中度好的股票
-- 买点偏好：缩量回踩 MA5/MA10 支撑
 """
 import os
+
+from api import run_api_server
 
 # 代理配置 - 仅在本地环境使用，GitHub Actions 不需要
 if os.getenv("GITHUB_ACTIONS") != "true":
@@ -33,6 +29,7 @@ if os.getenv("GITHUB_ACTIONS") != "true":
 import argparse
 import logging
 import sys
+import pickle
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timezone, timedelta
@@ -132,6 +129,14 @@ class StockAnalysisPipeline:
     3. 实现并发控制和异常处理
     """
     
+    _instance: Optional['StockAnalysisPipeline'] = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(
         self,
         config: Optional[Config] = None,
@@ -144,6 +149,9 @@ class StockAnalysisPipeline:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
         """
+        if self._initialized:
+            return
+            
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
         
@@ -155,6 +163,11 @@ class StockAnalysisPipeline:
         self.analyzer = GeminiAnalyzer()
         self.notifier = NotificationService()
         
+        # 初始化分析结果缓存目录
+        self.cache_dir = Path("cache_analysis")
+        self.cache_dir.mkdir(exist_ok=True)
+        self._clean_old_cache()
+        
         # 初始化搜索服务
         self.search_service = SearchService(
             bocha_keys=self.config.bocha_api_keys,
@@ -162,6 +175,7 @@ class StockAnalysisPipeline:
             serpapi_keys=self.config.serpapi_keys,
         )
         
+        self._initialized = True
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
         logger.info("已启用趋势分析器 (MA5>MA10>MA20 多头判断)")
         if self.search_service.is_available:
@@ -169,6 +183,29 @@ class StockAnalysisPipeline:
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
     
+    @classmethod
+    def get_instance(cls) -> 'StockAnalysisPipeline':
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def _clean_old_cache(self):
+        """清除旧的缓存文件（非当天的）"""
+        today_str = datetime.now().strftime('%Y%m%d')
+        try:
+            for f in self.cache_dir.glob("analysis_*.pkl"):
+                # 如果文件名中不包含今天的日期，则删除
+                if today_str not in f.name:
+                    f.unlink()
+                    logger.debug(f"已清除旧缓存: {f.name}")
+        except Exception as e:
+            logger.warning(f"清除旧缓存失败: {e}")
+
+    def _get_cache_path(self, code: str) -> Path:
+        """获取缓存文件路径，包含日期以确保按天隔离"""
+        today_str = datetime.now().strftime('%Y%m%d')
+        return self.cache_dir / f"analysis_{code}_{today_str}.pkl"
+
     def fetch_and_save_stock_data(
         self, 
         code: str,
@@ -450,6 +487,18 @@ class StockAnalysisPipeline:
         """
         logger.info(f"========== 开始处理 {code} ==========")
         
+        # Step 0: 检查缓存 (仅在非 dry-run 模式下)
+        if not skip_analysis:
+            cache_path = self._get_cache_path(code)
+            if cache_path.exists():
+                try:
+                    with open(cache_path, 'rb') as f:
+                        cached_result = pickle.load(f)
+                        logger.info(f"[{code}] 命中今日缓存，直接返回分析结果")
+                        return cached_result
+                except Exception as e:
+                    logger.warning(f"[{code}] 读取缓存失败: {e}")
+
         try:
             # Step 1: 获取并保存数据
             success, error = self.fetch_and_save_stock_data(code)
@@ -466,6 +515,13 @@ class StockAnalysisPipeline:
             result = self.analyze_stock(code)
             
             if result:
+                # 保存分析结果到缓存
+                try:
+                    with open(self._get_cache_path(code), 'wb') as f:
+                        pickle.dump(result, f)
+                except Exception as e:
+                    logger.warning(f"[{code}] 写入缓存失败: {e}")
+
                 logger.info(
                     f"[{code}] 分析完成: {result.operation_advice}, "
                     f"评分 {result.sentiment_score}"
@@ -675,8 +731,8 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --stocks 600519,000001  # 指定分析特定股票
   python main.py --no-notify        # 不发送推送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
-  python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --serve-api        # 启动 API 服务和定时任务
         '''
     )
     
@@ -718,12 +774,6 @@ def parse_arguments() -> argparse.Namespace:
     )
     
     parser.add_argument(
-        '--schedule',
-        action='store_true',
-        help='启用定时任务模式，每日定时执行'
-    )
-    
-    parser.add_argument(
         '--market-review',
         action='store_true',
         help='仅运行大盘复盘分析'
@@ -736,12 +786,12 @@ def parse_arguments() -> argparse.Namespace:
     )
     
     parser.add_argument(
-        '--webui',
+        '--serve-api',
         action='store_true',
-        help='启动本地配置 WebUI'
+        help='启动 FastAPI 服务和定时任务'
     )
     
-    return parser.parse_args()
+    return parser.parse_known_args()
 
 
 def run_market_review(notifier: NotificationService, analyzer=None, search_service=None) -> Optional[str]:
@@ -894,7 +944,7 @@ def main() -> int:
         退出码（0 表示成功）
     """
     # 解析命令行参数
-    args = parse_arguments()
+    args, unknown = parse_arguments()
     
     # 加载配置（在设置日志前加载，以获取日志目录）
     config = get_config()
@@ -912,88 +962,8 @@ def main() -> int:
     for warning in warnings:
         logger.warning(warning)
     
-    # 解析股票列表
-    stock_codes = None
-    if args.stocks:
-        stock_codes = [code.strip() for code in args.stocks.split(',') if code.strip()]
-        logger.info(f"使用命令行指定的股票列表: {stock_codes}")
-    
-    # === 启动 WebUI (如果启用) ===
-    # 优先级: 命令行参数 > 配置文件
-    start_webui = (args.webui or config.webui_enabled) and os.getenv("GITHUB_ACTIONS") != "true"
-    
-    if start_webui:
-        try:
-            from webui import run_server_in_thread
-            run_server_in_thread(host=config.webui_host, port=config.webui_port)
-        except Exception as e:
-            logger.error(f"启动 WebUI 失败: {e}")
-
-    try:
-        # 模式1: 仅大盘复盘
-        if args.market_review:
-            logger.info("模式: 仅大盘复盘")
-            notifier = NotificationService()
-            
-            # 初始化搜索服务和分析器（如果有配置）
-            search_service = None
-            analyzer = None
-            
-            if config.bocha_api_keys or config.tavily_api_keys or config.serpapi_keys:
-                search_service = SearchService(
-                    bocha_keys=config.bocha_api_keys,
-                    tavily_keys=config.tavily_api_keys,
-                    serpapi_keys=config.serpapi_keys
-                )
-            
-            if config.gemini_api_key:
-                analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
-            
-            run_market_review(notifier, analyzer, search_service)
-            return 0
-        
-        # 模式2: 定时任务模式
-        if args.schedule or config.schedule_enabled:
-            logger.info("模式: 定时任务")
-            logger.info(f"每日执行时间: {config.schedule_time}")
-            
-            from scheduler import run_with_schedule
-            
-            def scheduled_task():
-                #run_full_analysis(config, args, stock_codes)
-                scan_market()
-            
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=False  # 启动时先执行一次
-            )
-            return 0
-        
-        # 模式3: 正常单次运行
-        #run_full_analysis(config, args, stock_codes)
-        
-        logger.info("\n程序执行完成")
-        
-        # 如果启用了 WebUI 且是非定时任务模式，保持程序运行以便访问 WebUI
-        if start_webui and not (args.schedule or config.schedule_enabled):
-            logger.info("WebUI 运行中 (按 Ctrl+C 退出)...")
-            try:
-                # 简单的保持活跃循环
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
-        
-        return 0
-        
-    except KeyboardInterrupt:
-        logger.info("\n用户中断，程序退出")
-        return 130
-        
-    except Exception as e:
-        logger.exception(f"程序执行失败: {e}")
-        return 1
+    # 启动api.py
+    run_api_server()
 
 
 if __name__ == "__main__":

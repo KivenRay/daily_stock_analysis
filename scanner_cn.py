@@ -14,6 +14,7 @@ import random
 import argparse
 import json
 from pathlib import Path
+from contextlib import contextmanager
 from sqlalchemy import Column, String, Float, Date, Integer, UniqueConstraint, DateTime
 from sqlalchemy.orm import declarative_base
 
@@ -21,11 +22,25 @@ from storage import get_db, Base # 导入 Base
 
 logger = logging.getLogger(__name__)
 # ============ 清除代理设置（A股数据源不需要代理）============
-# akshare 访问东方财富等国内数据源时，代理反而会导致 SSL 错误
-for proxy_key in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'all_proxy']:
-    if proxy_key in os.environ:
-        del os.environ[proxy_key]
-logger.info("🇨🇳 A股扫描器 - 已清除代理设置（国内数据源无需代理）")
+# 移动到 context manager 中，避免影响主程序（如 main.py 调用 Gemini API）
+@contextmanager
+def no_proxy_context():
+    """临时禁用代理的上下文管理器"""
+    proxies = {}
+    keys = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'all_proxy']
+    
+    # 备份并删除代理设置
+    for key in keys:
+        if key in os.environ:
+            proxies[key] = os.environ[key]
+            del os.environ[key]
+    
+    try:
+        yield
+    finally:
+        # 恢复代理设置
+        for key, value in proxies.items():
+            os.environ[key] = value
 # ================================================================
 # 延时参数
 REQUEST_DELAY_MIN = 0.1
@@ -85,6 +100,18 @@ class StrongStock(Base):
     __table_args__ = (
         UniqueConstraint('scan_time', 'stock_code', name='uix_strong_stock_scan_time_code'),
     )
+
+    def to_dict(self):
+        """将 ORM 对象转换为字典"""
+        from datetime import date, datetime
+        d = {}
+        for column in self.__table__.columns:
+            value = getattr(self, column.name)
+            if isinstance(value, (date, datetime)):
+                d[column.name] = value.isoformat()
+            else:
+                d[column.name] = value
+        return d
 
 def get_args():
     """解析命令行参数"""
@@ -831,6 +858,13 @@ def save_strong_stocks_to_db(df: pd.DataFrame):
             logger.error(f"保存强势股票扫描结果到数据库时出错: {e}", exc_info=True)
 
 
+def no_proxy(func):
+    def wrapper(*args, **kwargs):
+        with no_proxy_context():
+            return func(*args, **kwargs)
+    return wrapper
+
+@no_proxy
 def scan_market():
     """扫描A股市场"""
     start_time = datetime.datetime.now()

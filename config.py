@@ -6,16 +6,15 @@ A股自选股智能分析系统 - 配置管理模块
 
 职责：
 1. 使用单例模式管理全局配置
-2. 从 .env 文件加载敏感配置
+2. 从 config.yml 文件加载配置
 3. 提供类型安全的配置访问接口
 """
 
 import os
+import yaml
 from pathlib import Path
-from typing import List, Optional
-from dotenv import load_dotenv, dotenv_values
+from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
-
 
 @dataclass
 class Config:
@@ -24,7 +23,7 @@ class Config:
     
     设计说明：
     - 使用 dataclass 简化配置属性定义
-    - 所有配置项从环境变量读取，支持默认值
+    - 所有配置项从 config.yml 读取，支持默认值
     - 类方法 get_instance() 实现单例访问
     """
     
@@ -34,196 +33,135 @@ class Config:
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
     feishu_app_secret: Optional[str] = None
-    feishu_folder_token: Optional[str] = None  # 目标文件夹 Token
+    feishu_folder_token: Optional[str] = None
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
     
     # === AI 分析配置 ===
     gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-3-flash-preview"  # 主模型
-    gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
-    
-    # Gemini API 请求配置（防止 429 限流）
-    gemini_request_delay: float = 2.0  # 请求间隔（秒）
-    gemini_max_retries: int = 5  # 最大重试次数
-    gemini_retry_delay: float = 5.0  # 重试基础延时（秒）
-    
-    # OpenAI 兼容 API（备选，当 Gemini 不可用时使用）
+    gemini_model: str = "gemini-1.5-flash"
+    gemini_model_fallback: str = "gemini-pro"
+    gemini_request_delay: float = 2.0
+    gemini_max_retries: int = 5
+    gemini_retry_delay: float = 5.0
+
+    # OpenAI 兼容 API（备选）
     openai_api_key: Optional[str] = None
-    openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
-    openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
+    openai_base_url: Optional[str] = None
+    openai_model: str = "gpt-4o-mini"
     
-    # === 搜索引擎配置（支持多 Key 负载均衡）===
-    bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
-    tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
-    serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
+    # === 搜索引擎配置 ===
+    bocha_api_keys: List[str] = field(default_factory=list)
+    tavily_api_keys: List[str] = field(default_factory=list)
+    serpapi_keys: List[str] = field(default_factory=list)
     
-    # === 通知配置（可同时配置多个，全部推送）===
-    
-    # 企业微信 Webhook
+    # === 通知配置 ===
     wechat_webhook_url: Optional[str] = None
-    
-    # 飞书 Webhook
     feishu_webhook_url: Optional[str] = None
-    
-    # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
-    telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
-    telegram_chat_id: Optional[str] = None  # Chat ID
-    
-    # 邮件配置（只需邮箱和授权码，SMTP 自动识别）
-    email_sender: Optional[str] = None  # 发件人邮箱
-    email_password: Optional[str] = None  # 邮箱密码/授权码
-    email_receivers: List[str] = field(default_factory=list)  # 收件人列表（留空则发给自己）
-    
-    # Pushover 配置（手机/桌面推送通知）
-    pushover_user_key: Optional[str] = None  # 用户 Key（https://pushover.net 获取）
-    pushover_api_token: Optional[str] = None  # 应用 API Token
-    
-    # 自定义 Webhook（支持多个，逗号分隔）
-    # 适用于：钉钉、Discord、Slack、自建服务等任意支持 POST JSON 的 Webhook
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    email_sender: Optional[str] = None
+    email_password: Optional[str] = None
+    email_receivers: List[str] = field(default_factory=list)
+    pushover_user_key: Optional[str] = None
+    pushover_api_token: Optional[str] = None
     custom_webhook_urls: List[str] = field(default_factory=list)
-    custom_webhook_bearer_token: Optional[str] = None  # Bearer Token（用于需要认证的 Webhook）
-    
-    # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
+    custom_webhook_bearer_token: Optional[str] = None
     single_stock_notify: bool = False
-    
-    # 消息长度限制（字节）- 超长自动分批发送
-    feishu_max_bytes: int = 20000  # 飞书限制约 20KB，默认 20000 字节
-    wechat_max_bytes: int = 4000   # 企业微信限制 4096 字节，默认 4000 字节
+    feishu_max_bytes: int = 20000
+    wechat_max_bytes: int = 4000
     
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
     
     # === 日志配置 ===
-    log_dir: str = "./logs"  # 日志文件目录
-    log_level: str = "INFO"  # 日志级别
+    log_dir: str = "./logs"
+    log_level: str = "INFO"
     
     # === 系统配置 ===
-    max_workers: int = 3  # 低并发防封禁
+    max_workers: int = 3
     debug: bool = False
     
     # === 定时任务配置 ===
-    schedule_enabled: bool = False            # 是否启用定时任务
-    schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
-    market_review_enabled: bool = True        # 是否启用大盘复盘
+    scheduled_tasks: List[Dict[str, Any]] = field(default_factory=list) # 重新添加 scheduled_tasks 字段
+    market_review_enabled: bool = True
     
-    # === 流控配置（防封禁关键参数）===
-    # Akshare 请求间隔范围（秒）
+    # === 流控配置 ===
     akshare_sleep_min: float = 2.0
     akshare_sleep_max: float = 5.0
-    
-    # Tushare 每分钟最大请求数（免费配额）
     tushare_rate_limit_per_minute: int = 80
-    
-    # 重试配置
     max_retries: int = 3
     retry_base_delay: float = 1.0
     retry_max_delay: float = 30.0
     
-    # === WebUI 配置 ===
-    webui_enabled: bool = False
+    # === API 服务配置 ===
     webui_host: str = "127.0.0.1"
     webui_port: int = 8000
-    webui_api_key: Optional[str] = None # 新增 WebUI API Key
+    webui_api_key: Optional[str] = None
     
     # 单例实例存储
     _instance: Optional['Config'] = None
     
     @classmethod
     def get_instance(cls) -> 'Config':
-        """
-        获取配置单例实例
-        
-        单例模式确保：
-        1. 全局只有一个配置实例
-        2. 配置只从环境变量加载一次
-        3. 所有模块共享相同配置
-        """
+        """获取配置单例实例"""
         if cls._instance is None:
-            cls._instance = cls._load_from_env()
+            cls._instance = cls._load_from_yaml()
         return cls._instance
     
     @classmethod
-    def _load_from_env(cls) -> 'Config':
-        """
-        从 .env 文件加载配置
-        
-        加载优先级：
-        1. 系统环境变量
-        2. .env 文件
-        3. 代码中的默认值
-        """
-        # 加载项目根目录下的 .env 文件
-        env_path = Path(__file__).parent / '.env'
-        load_dotenv(dotenv_path=env_path)
-        
-        # 解析自选股列表（逗号分隔）
-        stock_list_str = os.getenv('STOCK_LIST', '')
-        stock_list = [
-            code.strip() 
-            for code in stock_list_str.split(',') 
-            if code.strip()
-        ]
-        
-        # 如果没有配置，使用默认的示例股票
-        if not stock_list:
-            stock_list = ['600519', '000001', '300750']
-        
-        # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
-        bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
-        bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
-        
-        tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
-        tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
-        
-        serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
-        serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
-        
+    def _load_from_yaml(cls) -> 'Config':
+        """从 config.yml 文件加载配置"""
+        config_path = Path(__file__).parent / 'config.yml'
+        if not config_path.exists():
+            raise FileNotFoundError("未找到 config.yml 配置文件。")
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f)
+
         return cls(
-            stock_list=stock_list,
-            feishu_app_id=os.getenv('FEISHU_APP_ID'),
-            feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
-            feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
-            tushare_token=os.getenv('TUSHARE_TOKEN'),
-            gemini_api_key=os.getenv('GEMINI_API_KEY'),
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
-            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
-            gemini_request_delay=float(os.getenv('GEMINI_REQUEST_DELAY', '2.0')),
-            gemini_max_retries=int(os.getenv('GEMINI_MAX_RETRIES', '5')),
-            gemini_retry_delay=float(os.getenv('GEMINI_RETRY_DELAY', '5.0')),
-            openai_api_key=os.getenv('OPENAI_API_KEY'),
-            openai_base_url=os.getenv('OPENAI_BASE_URL'),
-            openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
-            bocha_api_keys=bocha_api_keys,
-            tavily_api_keys=tavily_api_keys,
-            serpapi_keys=serpapi_keys,
-            wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
-            feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
-            telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
-            telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
-            email_sender=os.getenv('EMAIL_SENDER'),
-            email_password=os.getenv('EMAIL_PASSWORD'),
-            email_receivers=[r.strip() for r in os.getenv('EMAIL_RECEIVERS', '').split(',') if r.strip()],
-            pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
-            pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
-            custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
-            custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
-            single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
-            feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
-            wechat_max_bytes=int(os.getenv('WECHAT_MAX_BYTES', '4000')),
-            database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
-            log_dir=os.getenv('LOG_DIR', './logs'),
-            log_level=os.getenv('LOG_LEVEL', 'INFO'),
-            max_workers=int(os.getenv('MAX_WORKERS', '3')),
-            debug=os.getenv('DEBUG', 'false').lower() == 'true',
-            schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
-            schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
-            market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
-            webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
-            webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
-            webui_port=int(os.getenv('WEBUI_PORT', '8000')),
-            webui_api_key=os.getenv('WEBUI_API_KEY'),
+            stock_list=config_data.get('stock_list', []),
+            feishu_app_id=config_data.get('feishu_app_id'),
+            feishu_app_secret=config_data.get('feishu_app_secret'),
+            feishu_folder_token=config_data.get('feishu_folder_token'),
+            tushare_token=config_data.get('tushare_token'),
+            gemini_api_key=config_data.get('gemini_api_key'),
+            gemini_model=config_data.get('gemini_model', 'gemini-1.5-flash'),
+            gemini_model_fallback=config_data.get('gemini_model_fallback', 'gemini-pro'),
+            gemini_request_delay=float(config_data.get('gemini_request_delay', 2.0)),
+            gemini_max_retries=int(config_data.get('gemini_max_retries', 5)),
+            gemini_retry_delay=float(config_data.get('gemini_retry_delay', 5.0)),
+            openai_api_key=config_data.get('openai_api_key'),
+            openai_base_url=config_data.get('openai_base_url'),
+            openai_model=config_data.get('openai_model', 'gpt-4o-mini'),
+            bocha_api_keys=config_data.get('bocha_api_keys', []),
+            tavily_api_keys=config_data.get('tavily_api_keys', []),
+            serpapi_keys=config_data.get('serpapi_keys', []),
+            wechat_webhook_url=config_data.get('wechat_webhook_url'),
+            feishu_webhook_url=config_data.get('feishu_webhook_url'),
+            telegram_bot_token=config_data.get('telegram_bot_token'),
+            telegram_chat_id=config_data.get('telegram_chat_id'),
+            email_sender=config_data.get('email_sender'),
+            email_password=config_data.get('email_password'),
+            email_receivers=config_data.get('email_receivers', []),
+            pushover_user_key=config_data.get('pushover_user_key'),
+            pushover_api_token=config_data.get('pushover_api_token'),
+            custom_webhook_urls=config_data.get('custom_webhook_urls', []),
+            custom_webhook_bearer_token=config_data.get('custom_webhook_bearer_token'),
+            single_stock_notify=bool(config_data.get('single_stock_notify', False)),
+            feishu_max_bytes=int(config_data.get('feishu_max_bytes', 20000)),
+            wechat_max_bytes=int(config_data.get('wechat_max_bytes', 4000)),
+            database_path=config_data.get('database_path', './data/stock_analysis.db'),
+            log_dir=config_data.get('log_dir', './logs'),
+            log_level=config_data.get('log_level', 'INFO'),
+            max_workers=int(config_data.get('max_workers', 3)),
+            debug=bool(config_data.get('debug', False)),
+            scheduled_tasks=config_data.get('scheduled_tasks', []), # 从 config_data 读取 scheduled_tasks
+            market_review_enabled=bool(config_data.get('market_review_enabled', True)),
+            webui_host=config_data.get('webui_host', '127.0.0.1'),
+            webui_port=int(config_data.get('webui_port', 8000)),
+            webui_api_key=config_data.get('webui_api_key'),
         )
     
     @classmethod
@@ -232,86 +170,33 @@ class Config:
         cls._instance = None
 
     def refresh_stock_list(self) -> None:
-        """
-        热读取 STOCK_LIST 环境变量并更新配置中的自选股列表
-        
-        支持两种配置方式：
-        1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
-        2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
-        """
-        # 若 .env 中配置了 STOCK_LIST，则以 .env 为准；否则回退到系统环境变量
-        env_path = Path(__file__).parent / '.env'
-        stock_list_str = ''
-        if env_path.exists():
-            env_values = dotenv_values(env_path)
-            stock_list_str = (env_values.get('STOCK_LIST') or '').strip()
-
-        if not stock_list_str:
-            stock_list_str = os.getenv('STOCK_LIST', '')
-
-        stock_list = [
-            code.strip()
-            for code in stock_list_str.split(',')
-            if code.strip()
-        ]
-
-        self.stock_list = stock_list
+        """从 config.yml 热读取 stock_list"""
+        config_path = Path(__file__).parent / 'config.yml'
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f)
+                self.stock_list = config_data.get('stock_list', [])
     
     def validate(self) -> List[str]:
-        """
-        验证配置完整性
-        
-        Returns:
-            缺失或无效配置项的警告列表
-        """
+        """验证配置完整性"""
         warnings = []
-        
         if not self.stock_list:
-            warnings.append("警告：未配置自选股列表 (STOCK_LIST)")
-        
-        if not self.tushare_token:
-            warnings.append("提示：未配置 Tushare Token，将使用其他数据源")
-        
+            warnings.append("警告：未配置自选股列表 (stock_list)")
         if not self.gemini_api_key and not self.openai_api_key:
             warnings.append("警告：未配置 Gemini 或 OpenAI API Key，AI 分析功能将不可用")
-        elif not self.gemini_api_key:
-            warnings.append("提示：未配置 Gemini API Key，将使用 OpenAI 兼容 API")
-        
-        if not self.bocha_api_keys and not self.tavily_api_keys and not self.serpapi_keys:
-            warnings.append("提示：未配置搜索引擎 API Key (Bocha/Tavily/SerpAPI)，新闻搜索功能将不可用")
-        
-        # 检查通知配置
-        has_notification = (
-            self.wechat_webhook_url or 
-            self.feishu_webhook_url or
-            (self.telegram_bot_token and self.telegram_chat_id) or
-            (self.email_sender and self.email_password) or
-            (self.pushover_user_key and self.pushover_api_token)
-        )
-        if not has_notification:
-            warnings.append("提示：未配置通知渠道，将不发送推送通知")
-        
         return warnings
     
     def get_db_url(self) -> str:
-        """
-        获取 SQLAlchemy 数据库连接 URL
-        
-        自动创建数据库目录（如果不存在）
-        """
+        """获取 SQLAlchemy 数据库连接 URL"""
         db_path = Path(self.database_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{db_path.absolute()}"
 
-
-# === 便捷的配置访问函数 ===
 def get_config() -> Config:
     """获取全局配置实例的快捷方式"""
     return Config.get_instance()
 
-
 if __name__ == "__main__":
-    # 测试配置加载
     config = get_config()
     print("=== 配置加载测试 ===")
     print(f"自选股列表: {config.stock_list}")
@@ -319,7 +204,6 @@ if __name__ == "__main__":
     print(f"最大并发数: {config.max_workers}")
     print(f"调试模式: {config.debug}")
     
-    # 验证配置
     warnings = config.validate()
     if warnings:
         print("\n配置验证结果:")

@@ -21,6 +21,7 @@ import pandas as pd
 
 from config import get_config
 from search_service import SearchService
+from data_provider.akshare_fetcher import no_proxy_context
 
 logger = logging.getLogger(__name__)
 
@@ -133,16 +134,17 @@ class MarketAnalyzer:
         
         return overview
 
-    def _call_akshare_with_retry(self, fn, name: str, attempts: int = 2):
+    def _call_akshare_with_retry(self, fn, name: str, attempts: int = 3):
         last_error: Optional[Exception] = None
         for attempt in range(1, attempts + 1):
             try:
-                return fn()
+                with no_proxy_context():
+                    return fn()
             except Exception as e:
                 last_error = e
                 logger.warning(f"[大盘] {name} 获取失败 (attempt {attempt}/{attempts}): {e}")
                 if attempt < attempts:
-                    time.sleep(min(2 ** attempt, 5))
+                    time.sleep(min(2 ** attempt, 10))
         logger.error(f"[大盘] {name} 最终失败: {last_error}")
         return None
     
@@ -154,7 +156,7 @@ class MarketAnalyzer:
             logger.info("[大盘] 获取主要指数实时行情...")
             
             # 使用 akshare 获取指数行情（新浪财经接口，包含深市指数）
-            df = self._call_akshare_with_retry(ak.stock_zh_index_spot_sina, "指数行情", attempts=2)
+            df = self._call_akshare_with_retry(ak.stock_zh_index_spot_sina, "指数行情", attempts=3)
             
             if df is not None and not df.empty:
                 for code, name in self.MAIN_INDICES.items():
@@ -197,7 +199,7 @@ class MarketAnalyzer:
             logger.info("[大盘] 获取市场涨跌统计...")
             
             # 获取全部A股实时行情
-            df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=2)
+            df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=3)
             
             if df is not None and not df.empty:
                 # 涨跌统计
@@ -230,31 +232,36 @@ class MarketAnalyzer:
         try:
             logger.info("[大盘] 获取板块涨跌榜...")
             
-            # 获取行业板块行情
-            df = self._call_akshare_with_retry(ak.stock_board_industry_name_em, "行业板块行情", attempts=2)
+            # 获取行业板块行情，使用 stock_board_industry_spot_em
+            df = self._call_akshare_with_retry(ak.stock_board_industry_spot_em, "行业板块行情", attempts=3)
             
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
-                if change_col in df.columns:
+                # 检查 '名称' 列是否存在，ak.stock_board_industry_spot_em 返回的列名是 '名称'
+                name_col = '名称' 
+                
+                if change_col in df.columns and name_col in df.columns:
                     df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
                     df = df.dropna(subset=[change_col])
                     
                     # 涨幅前5
                     top = df.nlargest(5, change_col)
                     overview.top_sectors = [
-                        {'name': row['板块名称'], 'change_pct': row[change_col]}
+                        {'name': row[name_col], 'change_pct': row[change_col]} # 使用 '名称' 列
                         for _, row in top.iterrows()
                     ]
                     
                     # 跌幅前5
                     bottom = df.nsmallest(5, change_col)
                     overview.bottom_sectors = [
-                        {'name': row['板块名称'], 'change_pct': row[change_col]}
+                        {'name': row[name_col], 'change_pct': row[change_col]} # 使用 '名称' 列
                         for _, row in bottom.iterrows()
                     ]
                     
                     logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
                     logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+                else:
+                    logger.warning(f"[大盘] 行业板块行情 DataFrame 缺少 '{change_col}' 或 '{name_col}' 列。")
                     
         except Exception as e:
             logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
@@ -350,17 +357,8 @@ class MarketAnalyzer:
                 'max_output_tokens': 2048,
             }
             
-            # 根据 analyzer 使用的 API 类型调用
-            if self.analyzer._use_openai:
-                # 使用 OpenAI 兼容 API
-                review = self.analyzer._call_openai_api(prompt, generation_config)
-            else:
-                # 使用 Gemini API
-                response = self.analyzer._model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                )
-                review = response.text.strip() if response and response.text else None
+            # 统一调用 analyzer._call_api_with_retry 方法
+            review = self.analyzer._call_api_with_retry(prompt, generation_config)
             
             if review:
                 logger.info(f"[大盘] 复盘报告生成成功，长度: {len(review)} 字符")

@@ -20,9 +20,11 @@ AkshareFetcher - 主数据源 (Priority 1)
 
 import logging
 import random
+import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
 import pandas as pd
@@ -36,6 +38,27 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
 
+
+@contextmanager
+def no_proxy_context():
+    """临时禁用代理的上下文管理器，用于 akshare 等国内数据源"""
+    proxies = {}
+    keys = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'all_proxy']
+
+    # 备份并删除代理设置
+    for key in keys:
+        if key in os.environ:
+            proxies[key] = os.environ[key]
+            del os.environ[key]
+
+    logger.debug("已临时禁用代理设置，用于访问国内数据源。")
+    try:
+        yield
+    finally:
+        # 恢复代理设置
+        for key, value in proxies.items():
+            os.environ[key] = value
+        logger.debug("已恢复代理设置。")
 
 @dataclass
 class RealtimeQuote:
@@ -180,13 +203,6 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 ]
 
-
-# 缓存实时行情数据（避免重复请求）
-_realtime_cache: Dict[str, Any] = {
-    'data': None,
-    'timestamp': 0,
-    'ttl': 60  # 60秒缓存有效期
-}
 
 # ETF 实时行情缓存
 _etf_realtime_cache: Dict[str, Any] = {
@@ -356,13 +372,14 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
-            df = ak.stock_zh_a_hist(
-                symbol=stock_code,
-                period="daily",
-                start_date=start_date.replace('-', ''),
-                end_date=end_date.replace('-', ''),
-                adjust="qfq"  # 前复权
-            )
+            with no_proxy_context():
+                df = ak.stock_zh_a_hist(
+                    symbol=stock_code,
+                    period="daily",
+                    start_date=start_date.replace('-', ''),
+                    end_date=end_date.replace('-', ''),
+                    adjust="qfq"  # 前复权
+                )
             
             api_elapsed = _time.time() - api_start
             
@@ -416,14 +433,15 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
-            # 调用 akshare 获取 ETF 日线数据
-            df = ak.fund_etf_hist_em(
-                symbol=stock_code,
-                period="daily",
-                start_date=start_date.replace('-', ''),
-                end_date=end_date.replace('-', ''),
-                adjust="qfq"  # 前复权
-            )
+            with no_proxy_context():
+                # 调用 akshare 获取 ETF 日线数据
+                df = ak.fund_etf_hist_em(
+                    symbol=stock_code,
+                    period="daily",
+                    start_date=start_date.replace('-', ''),
+                    end_date=end_date.replace('-', ''),
+                    adjust="qfq"  # 前复权
+                )
             
             api_elapsed = _time.time() - api_start
             
@@ -480,14 +498,15 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
-            # 调用 akshare 获取港股日线数据
-            df = ak.stock_hk_hist(
-                symbol=code,
-                period="daily",
-                start_date=start_date.replace('-', ''),
-                end_date=end_date.replace('-', ''),
-                adjust="qfq"  # 前复权
-            )
+            with no_proxy_context():
+                # 调用 akshare 获取港股日线数据
+                df = ak.stock_hk_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=start_date.replace('-', ''),
+                    end_date=end_date.replace('-', ''),
+                    adjust="qfq"  # 前复权
+                )
             
             api_elapsed = _time.time() - api_start
             
@@ -575,92 +594,79 @@ class AkshareFetcher(BaseFetcher):
         """
         获取普通 A 股实时行情数据
         
-        数据来源：ak.stock_zh_a_spot_em()
-        包含：量比、换手率、市盈率、市净率、总市值、流通市值等
+        替代方案：组合使用 stock_individual_info_em (个股信息) + stock_zh_a_hist (日线行情)
+        因为 akshare 没有稳定且轻量的单股实时行情接口 (stock_zh_a_spot_em 太重，stock_individual_spot_em 不存在)
         """
         import akshare as ak
         
         try:
-            # 检查缓存
-            current_time = time.time()
-            if (_realtime_cache['data'] is not None and 
-                current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']):
-                df = _realtime_cache['data']
-                logger.debug(f"[缓存命中] 使用缓存的A股实时行情数据")
-            else:
-                last_error: Optional[Exception] = None
-                df = None
-                for attempt in range(1, 3):
-                    try:
-                        # 防封禁策略
-                        self._set_random_user_agent()
-                        self._enforce_rate_limit()
-
-                        logger.info(f"[API调用] ak.stock_zh_a_spot_em() 获取A股实时行情... (attempt {attempt}/2)")
-                        import time as _time
-                        api_start = _time.time()
-
-                        df = ak.stock_zh_a_spot_em()
-
-                        api_elapsed = _time.time() - api_start
-                        logger.info(f"[API返回] ak.stock_zh_a_spot_em 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
-                        break
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(f"[API错误] ak.stock_zh_a_spot_em 获取失败 (attempt {attempt}/2): {e}")
-                        time.sleep(min(2 ** attempt, 5))
-
-                # 更新缓存：成功缓存数据；失败也缓存空数据，避免同一轮任务对同一接口反复请求
-                if df is None:
-                    logger.error(f"[API错误] ak.stock_zh_a_spot_em 最终失败: {last_error}")
-                    df = pd.DataFrame()
-                _realtime_cache['data'] = df
-                _realtime_cache['timestamp'] = current_time
-
-            if df is None or df.empty:
-                logger.warning(f"[实时行情] A股实时行情数据为空，跳过 {stock_code}")
+            # 1. 获取个股基本信息 (名称, 市值, PE, PB)
+            # 接口: ak.stock_individual_info_em(symbol="000001")
+            with no_proxy_context():
+                df_info = ak.stock_individual_info_em(symbol=stock_code)
+            
+            info_map = {}
+            if df_info is not None and not df_info.empty:
+                info_map = dict(zip(df_info['item'], df_info['value']))
+            
+            stock_name = str(info_map.get('股票简称', ''))
+            
+            # 2. 获取最新日线数据 (价格, 涨跌幅, 换手率, 量比等)
+            # 接口: ak.stock_zh_a_hist
+            # 获取最近 15 天，确保能取到数据（避开长假）
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
+            
+            with no_proxy_context():
+                df_hist = ak.stock_zh_a_hist(
+                    symbol=stock_code, 
+                    period="daily", 
+                    start_date=start_date, 
+                    end_date=end_date, 
+                    adjust="qfq"
+                )
+            
+            if df_hist is None or df_hist.empty:
+                logger.warning(f"[API返回] 未获取到 {stock_code} 的行情数据 (stock_zh_a_hist)")
                 return None
+                
+            # 取最新的一行
+            latest = df_hist.iloc[-1]
             
-            # 查找指定股票
-            row = df[df['代码'] == stock_code]
-            if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
-                return None
-            
-            row = row.iloc[0]
-            
-            # 安全获取字段值
+            # 安全转换函数
             def safe_float(val, default=0.0):
                 try:
-                    if pd.isna(val):
+                    if pd.isna(val) or val in ['-', '']:
                         return default
+                    if isinstance(val, str):
+                        val = val.replace(',', '').replace('亿', '')
                     return float(val)
                 except:
                     return default
-            
+
+            # 3. 构建 RealtimeQuote 对象
             quote = RealtimeQuote(
                 code=stock_code,
-                name=str(row.get('名称', '')),
-                price=safe_float(row.get('最新价')),
-                change_pct=safe_float(row.get('涨跌幅')),
-                change_amount=safe_float(row.get('涨跌额')),
-                volume_ratio=safe_float(row.get('量比')),
-                turnover_rate=safe_float(row.get('换手率')),
-                amplitude=safe_float(row.get('振幅')),
-                pe_ratio=safe_float(row.get('市盈率-动态')),
-                pb_ratio=safe_float(row.get('市净率')),
-                total_mv=safe_float(row.get('总市值')),
-                circ_mv=safe_float(row.get('流通市值')),
-                change_60d=safe_float(row.get('60日涨跌幅')),
-                high_52w=safe_float(row.get('52周最高')),
-                low_52w=safe_float(row.get('52周最低')),
+                name=stock_name,
+                price=safe_float(latest.get('收盘')),
+                change_pct=safe_float(latest.get('涨跌幅')),
+                change_amount=safe_float(latest.get('涨跌额')),
+                volume_ratio=0.0, # hist 接口通常不包含量比
+                turnover_rate=safe_float(latest.get('换手率')),
+                amplitude=safe_float(latest.get('振幅')),
+                pe_ratio=safe_float(info_map.get('市盈率(动)')),
+                pb_ratio=safe_float(info_map.get('市净率')),
+                total_mv=safe_float(info_map.get('总市值')),
+                circ_mv=safe_float(info_map.get('流通市值')),
+                change_60d=0.0, 
+                high_52w=0.0,
+                low_52w=0.0
             )
             
             logger.info(f"[实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%, "
                        f"PE={quote.pe_ratio}, PB={quote.pb_ratio}")
             return quote
-            
+
         except Exception as e:
             logger.error(f"[API错误] 获取 {stock_code} 实时行情失败: {e}")
             return None
@@ -690,25 +696,28 @@ class AkshareFetcher(BaseFetcher):
             else:
                 last_error: Optional[Exception] = None
                 df = None
-                for attempt in range(1, 3):
+                max_retries = 5
+                for attempt in range(1, max_retries + 1):
                     try:
                         # 防封禁策略
                         self._set_random_user_agent()
                         self._enforce_rate_limit()
 
-                        logger.info(f"[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt {attempt}/2)")
+                        logger.info(f"[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt {attempt}/{max_retries})")
                         import time as _time
                         api_start = _time.time()
 
-                        df = ak.fund_etf_spot_em()
-
+                        with no_proxy_context():
+                            df = ak.fund_etf_spot_em()
+                            
                         api_elapsed = _time.time() - api_start
                         logger.info(f"[API返回] ak.fund_etf_spot_em 成功: 返回 {len(df)} 只ETF, 耗时 {api_elapsed:.2f}s")
                         break
                     except Exception as e:
                         last_error = e
-                        logger.warning(f"[API错误] ak.fund_etf_spot_em 获取失败 (attempt {attempt}/2): {e}")
-                        time.sleep(min(2 ** attempt, 5))
+                        logger.warning(f"[API错误] ak.fund_etf_spot_em 获取失败 (attempt {attempt}/{max_retries}): {e}")
+                        # 延长重试等待时间，最大等待 30 秒
+                        time.sleep(min(2 ** attempt + 2, 30))
 
                 if df is None:
                     logger.error(f"[API错误] ak.fund_etf_spot_em 最终失败: {last_error}")
@@ -791,8 +800,9 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
-            df = ak.stock_hk_spot_em()
-            
+            with no_proxy_context():
+                df = ak.stock_hk_spot_em()
+                
             api_elapsed = _time.time() - api_start
             logger.info(f"[API返回] ak.stock_hk_spot_em 成功: 返回 {len(df)} 只港股, 耗时 {api_elapsed:.2f}s")
             
@@ -871,8 +881,9 @@ class AkshareFetcher(BaseFetcher):
             import time as _time
             api_start = _time.time()
             
-            df = ak.stock_cyq_em(symbol=stock_code)
-            
+            with no_proxy_context():
+                df = ak.stock_cyq_em(symbol=stock_code)
+                
             api_elapsed = _time.time() - api_start
             
             if df.empty:

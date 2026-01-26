@@ -36,11 +36,11 @@ ENV LOG_DIR=/app/logs
 ENV DATABASE_PATH=/app/data/stock_analysis.db
 
 # 数据卷（持久化数据）
-VOLUME ["/app/data", "/app/logs", "/app/reports"]
+VOLUME ["/app/data", "/app/logs", "/app/reports", "/app/config.yml"]
 
 # 健康检查
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import sys; sys.exit(0)"
 
 # 默认命令（可被覆盖）
-CMD ["python", "main.py", "--schedule"]
+CMD ["python", "main.py"]

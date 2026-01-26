@@ -13,6 +13,7 @@ A股自选股智能分析系统 - AI分析层
 import json
 import logging
 import time
+import os # 导入 os 模块
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
@@ -25,6 +26,11 @@ from tenacity import (
 )
 
 from config import get_config
+
+# 导入 Gemini API 的安全设置相关类型
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +295,7 @@ class GeminiAnalyzer:
             "chip_structure": {
                 "profit_ratio": 获利比例,
                 "avg_cost": 平均成本,
-                "concentration": 筹码集中度,
+                "concentration":筹码集中度,
                 "chip_health": "健康/一般/警惕"
             }
         },
@@ -480,24 +486,38 @@ class GeminiAnalyzer:
         - 不启用 Google Search（使用外部 Tavily/SerpAPI 搜索）
         """
         try:
-            import google.generativeai as genai
+            # genai 已经在文件顶部导入
             
             # 配置 API Key
-            genai.configure(api_key=self._api_key)
+            config = get_config()
+            genai_configure_kwargs = {"api_key": self._api_key, 'transport': 'rest'}
+
+            # 设置代理环境变量
+            #if config.http_proxy:
+                #os.environ['HTTP_PROXY'] = config.http_proxy
+                #os.environ['HTTPS_PROXY'] = config.http_proxy
+                #logger.info(f"Gemini API 配置代理环境变量: {config.http_proxy}")
+            
+            genai.configure(**genai_configure_kwargs)
             
             # 从配置获取模型名称
-            config = get_config()
             model_name = config.gemini_model
             fallback_model = config.gemini_model_fallback
-            
-            # 不再使用 Google Search Grounding（已知有兼容性问题）
-            # 改为使用外部搜索服务（Tavily/SerpAPI）预先获取新闻
+
+            # 定义安全设置
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
             
             # 尝试初始化主模型
             try:
                 self._model = genai.GenerativeModel(
                     model_name=model_name,
                     system_instruction=self.SYSTEM_PROMPT,
+                    safety_settings=safety_settings # 在初始化时应用安全设置
                 )
                 self._current_model_name = model_name
                 self._using_fallback = False
@@ -508,6 +528,7 @@ class GeminiAnalyzer:
                 self._model = genai.GenerativeModel(
                     model_name=fallback_model,
                     system_instruction=self.SYSTEM_PROMPT,
+                    safety_settings=safety_settings # 在初始化时应用安全设置
                 )
                 self._current_model_name = fallback_model
                 self._using_fallback = True
@@ -525,18 +546,27 @@ class GeminiAnalyzer:
             是否成功切换
         """
         try:
-            import google.generativeai as genai
+            # genai 已经在文件顶部导入
             config = get_config()
             fallback_model = config.gemini_model_fallback
+
+            # 定义安全设置
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
             
             logger.warning(f"[LLM] 切换到备选模型: {fallback_model}")
             self._model = genai.GenerativeModel(
                 model_name=fallback_model,
                 system_instruction=self.SYSTEM_PROMPT,
+                safety_settings=safety_settings # 在初始化时应用安全设置
             )
             self._current_model_name = fallback_model
             self._using_fallback = True
-            logger.info(f"[LLM] 备选模型 {fallback_model} 初始化成功")
+            logger.info(f"Gemini 备选模型初始化成功 (模型: {fallback_model})")
             return True
         except Exception as e:
             logger.error(f"[LLM] 切换备选模型失败: {e}")
@@ -639,7 +669,8 @@ class GeminiAnalyzer:
                 response = self._model.generate_content(
                     prompt,
                     generation_config=generation_config,
-                    request_options={"timeout": 120}
+                    request_options={"timeout": 120},
+                    # safety_settings 已在模型初始化时配置，此处不再重复传递
                 )
                 
                 if response and response.text:
@@ -820,7 +851,7 @@ class GeminiAnalyzer:
         """
         格式化分析提示词（决策仪表盘 v2.0）
         
-        包含：技术指标、实时行情（量比/换手率）、筹码分布、趋势分析、新闻
+        包含：技术指标、实时行情（量比、换手率）、筹码分布、趋势分析、新闻
         
         Args:
             context: 技术面数据上下文（包含增强数据）
@@ -975,7 +1006,7 @@ class GeminiAnalyzer:
 
 ### 决策仪表盘要求：
 - **核心结论**：一句话说清该买/该卖/该等
-- **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
+- **分持仓建议**：空仓者怎么做 vs 持仓者怎么做
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
 

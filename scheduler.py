@@ -1,184 +1,177 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-定时调度模块
+A股自选股智能分析系统 - 定时任务调度器
 ===================================
 
 职责：
-1. 支持每日定时执行股票分析
-2. 支持定时执行大盘复盘
-3. 优雅处理信号，确保可靠退出
-
-依赖：
-- schedule: 轻量级定时任务库
+1. 使用 schedule 库实现灵活的定时任务调度
+2. 根据配置，动态添加不同类型的分析任务
+3. 在独立的线程中运行调度器，避免阻塞主线程
 """
 
 import logging
-import signal
-import sys
 import time
 import threading
-from datetime import datetime
-from typing import Callable, Optional
+from typing import List, Dict, Any, Callable
+import importlib
+import schedule
+from config import get_config
 
 logger = logging.getLogger(__name__)
 
+# 任务类型到执行函数的映射（使用字符串，避免循环导入）
+TASK_REGISTRY: Dict[str, str] = {
+    "full_analysis": "main.run_full_analysis",
+    "market_review": "main.run_market_review",
+    "scan_market": "scanner_cn.scan_market",
+}
 
-class GracefulShutdown:
+def _run_task(task_name: str, task_config: Dict[str, Any]):
     """
-    优雅退出处理器
-    
-    捕获 SIGTERM/SIGINT 信号，确保任务完成后再退出
-    """
-    
-    def __init__(self):
-        self.shutdown_requested = False
-        self._lock = threading.Lock()
-        
-        # 注册信号处理器
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-    
-    def _signal_handler(self, signum, frame):
-        """信号处理函数"""
-        with self._lock:
-            if not self.shutdown_requested:
-                logger.info(f"收到退出信号 ({signum})，等待当前任务完成...")
-                self.shutdown_requested = True
-    
-    @property
-    def should_shutdown(self) -> bool:
-        """检查是否应该退出"""
-        with self._lock:
-            return self.shutdown_requested
-
-
-class Scheduler:
-    """
-    定时任务调度器
-    
-    基于 schedule 库实现，支持：
-    - 每日定时执行
-    - 启动时立即执行
-    - 优雅退出
-    """
-    
-    def __init__(self, schedule_time: str = "18:00"):
-        """
-        初始化调度器
-        
-        Args:
-            schedule_time: 每日执行时间，格式 "HH:MM"
-        """
-        try:
-            import schedule
-            self.schedule = schedule
-        except ImportError:
-            logger.error("schedule 库未安装，请执行: pip install schedule")
-            raise ImportError("请安装 schedule 库: pip install schedule")
-        
-        self.schedule_time = schedule_time
-        self.shutdown_handler = GracefulShutdown()
-        self._task_callback: Optional[Callable] = None
-        self._running = False
-        
-    def set_daily_task(self, task: Callable, run_immediately: bool = True):
-        """
-        设置每日定时任务
-        
-        Args:
-            task: 要执行的任务函数（无参数）
-            run_immediately: 是否在设置后立即执行一次
-        """
-        self._task_callback = task
-        
-        # 设置每日定时任务
-        self.schedule.every().day.at(self.schedule_time).do(self._safe_run_task)
-        logger.info(f"已设置每日定时任务，执行时间: {self.schedule_time}")
-        
-        if run_immediately:
-            logger.info("立即执行一次任务...")
-            self._safe_run_task()
-    
-    def _safe_run_task(self):
-        """安全执行任务（带异常捕获）"""
-        if self._task_callback is None:
-            return
-        
-        try:
-            logger.info("=" * 50)
-            logger.info(f"定时任务开始执行 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info("=" * 50)
-            
-            self._task_callback()
-            
-            logger.info(f"定时任务执行完成 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            
-        except Exception as e:
-            logger.exception(f"定时任务执行失败: {e}")
-    
-    def run(self):
-        """
-        运行调度器主循环
-        
-        阻塞运行，直到收到退出信号
-        """
-        self._running = True
-        logger.info("调度器开始运行...")
-        logger.info(f"下次执行时间: {self._get_next_run_time()}")
-        
-        while self._running and not self.shutdown_handler.should_shutdown:
-            self.schedule.run_pending()
-            time.sleep(30)  # 每30秒检查一次
-            
-            # 每小时打印一次心跳
-            if datetime.now().minute == 0 and datetime.now().second < 30:
-                logger.info(f"调度器运行中... 下次执行: {self._get_next_run_time()}")
-        
-        logger.info("调度器已停止")
-    
-    def _get_next_run_time(self) -> str:
-        """获取下次执行时间"""
-        jobs = self.schedule.get_jobs()
-        if jobs:
-            next_run = min(job.next_run for job in jobs)
-            return next_run.strftime('%Y-%m-%d %H:%M:%S')
-        return "未设置"
-    
-    def stop(self):
-        """停止调度器"""
-        self._running = False
-
-
-def run_with_schedule(
-    task: Callable,
-    schedule_time: str = "18:00",
-    run_immediately: bool = True
-):
-    """
-    便捷函数：使用定时调度运行任务
+    执行具体的定时任务
     
     Args:
-        task: 要执行的任务函数
-        schedule_time: 每日执行时间
-        run_immediately: 是否立即执行一次
+        task_name: 任务名称
+        task_config: 任务配置
     """
-    scheduler = Scheduler(schedule_time=schedule_time)
-    scheduler.set_daily_task(task, run_immediately=run_immediately)
-    scheduler.run()
+    logger.info(f"🚀 开始执行定时任务: {task_name}")
+    
+    task_path = TASK_REGISTRY.get(task_name)
+    if not task_path:
+        logger.error(f"未知的任务类型: {task_name}")
+        return
+        
+    try:
+        module_path, func_name = task_path.rsplit('.', 1)
+        module = importlib.import_module(module_path)
+        task_func = getattr(module, func_name)
+    except (ImportError, AttributeError) as e:
+        logger.error(f"无法加载任务函数 '{task_path}': {e}")
+        return
 
+    try:
+        # 在这里，我们为每个任务函数提供它需要的参数
+        if task_name == "full_analysis":
+            from argparse import Namespace
+            args = Namespace(
+                single_notify=task_config.get('single_notify', False), 
+                workers=task_config.get('workers'), 
+                dry_run=task_config.get('dry_run', False), 
+                no_notify=task_config.get('no_notify', False),
+                no_market_review=task_config.get('no_market_review', False)
+            )
+            task_func(get_config(), args, stock_codes=task_config.get('stock_codes'))
+        elif task_name == "market_review":
+            from notification import get_notification_service
+            from analyzer import get_analyzer
+            from search_service import get_search_service
+            
+            notifier = get_notification_service()
+            analyzer = get_analyzer()
+            search_service = get_search_service()
+            task_func(notifier, analyzer, search_service)
+        elif task_name == "scan_market":
+            task_func()
+        else:
+            task_func()
+            
+        logger.info(f"✅ 定时任务: {task_name} 执行完成")
+        
+    except Exception as e:
+        logger.error(f"❌ 定时任务: {task_name} 执行失败: {e}", exc_info=True)
+
+def setup_scheduler():
+    """
+    设置所有定时任务
+    """
+    config = get_config()
+    tasks = config.scheduled_tasks
+    
+    if not tasks:
+        logger.info("没有配置任何定时任务。")
+        return
+        
+    logger.info(f"从 config.yml 加载了 {len(tasks)} 个定时任务，正在设置...")
+    
+    for task_idx, task in enumerate(tasks):
+        task_type = task.get("type")
+        task_time = task.get("time")
+        day_of_week = task.get("day_of_week") # 新增：支持每周特定几天运行
+        
+        if not task_type or not task_time:
+            logger.warning(f"跳过无效的定时任务配置 (索引 {task_idx}): {task}")
+            continue
+            
+        if task_type not in TASK_REGISTRY:
+            logger.warning(f"未知的任务类型 '{task_type}' (索引 {task_idx})，跳过。")
+            continue
+            
+        try:
+            from functools import partial
+            job_func = partial(_run_task, task_name=task_type, task_config=task)
+            
+            # 根据 day_of_week 设置任务
+            if day_of_week:
+                days = day_of_week.split(',') # 允许逗号分隔，例如 "monday,tuesday"
+                for day in days:
+                    day = day.strip().lower()
+                    if day == "monday":
+                        schedule.every().monday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    elif day == "tuesday":
+                        schedule.every().tuesday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    elif day == "wednesday":
+                        schedule.every().wednesday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    elif day == "thursday":
+                        schedule.every().thursday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    elif day == "friday":
+                        schedule.every().friday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    elif day == "saturday":
+                        schedule.every().saturday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    elif day == "sunday":
+                        schedule.every().sunday.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                    else:
+                        logger.warning(f"无效的 day_of_week '{day}' (任务 {task_idx})，跳过该天的设置。")
+                logger.info(f"已设置任务 '{task_type}' (索引 {task_idx})，每周 {day_of_week} {task_time} 执行。")
+            else:
+                # 默认每日执行
+                schedule.every().day.at(task_time).do(job_func).tag(f"{task_type}-{task_idx}")
+                logger.info(f"已设置任务 '{task_type}' (索引 {task_idx})，每日 {task_time} 执行。")
+            
+        except Exception as e:
+            logger.error(f"设置任务 '{task_type}' (索引 {task_idx}) 失败: {e}", exc_info=True)
+
+def run_scheduler():
+    """
+    在独立的线程中运行定时任务调度器
+    """
+    setup_scheduler()
+    
+    def _scheduler_loop():
+        logger.info("⏰ 定时任务调度器已启动...")
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+            
+    scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
+    scheduler_thread.start()
+    logger.info("调度器线程已在后台运行。")
+    return scheduler_thread
 
 if __name__ == "__main__":
-    # 测试定时调度
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s',
-    )
+    # 用于独立测试调度器
+    logging.basicConfig(level=logging.INFO)
     
-    def test_task():
-        print(f"任务执行中... {datetime.now()}")
-        time.sleep(2)
-        print("任务完成!")
+    # 为了测试，我们需要确保 main.py 中的函数可以被导入
+    # 并且它们的依赖项也已正确设置
     
-    print("启动测试调度器（按 Ctrl+C 退出）")
-    run_with_schedule(test_task, schedule_time="23:59", run_immediately=True)
+    print("正在设置并启动调度器进行测试...")
+    run_scheduler()
+    
+    print("调度器正在后台运行，主线程将保持活跃。按 Ctrl+C 退出。")
+    try:
+        while True:
+            time.sleep(60)
+            print(f"[{datetime.now()}] 调度器仍在运行... 下一个任务在: {schedule.next_run}")
+    except KeyboardInterrupt:
+        print("\n正在退出...")
