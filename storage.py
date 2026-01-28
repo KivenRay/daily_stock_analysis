@@ -31,7 +31,8 @@ from sqlalchemy import (
     and_,
     desc,
     Text,
-    Boolean
+    Boolean,
+    func
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -167,6 +168,31 @@ class AIStockRecommendation(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+
+class PushMessageRecord(Base):
+    """
+    消息推送记录表
+    
+    记录已推送的消息，防止重复推送
+    """
+    __tablename__ = 'push_message_record'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')
+    stock_code = Column(String(20), nullable=False, comment='股票代码')
+    stock_name = Column(String(100), nullable=False, comment='股票名称')
+    sector = Column(String(100), comment='所属板块')
+    
+    # 消息类型：1.AI分析 2.触发买入价 3.触发卖出价(止盈) 4.触发止损价
+    message_type = Column(Integer, nullable=False, comment='消息类型')
+    
+    message_content = Column(Text, comment='消息内容')
+    current_price = Column(Float, comment='触发时的实时价格')
+    trade_range = Column(String(100), comment='触发时的交易区间描述')
+    
+    created_at = Column(DateTime, default=datetime.now, comment='创建时间')
+    
+    def __repr__(self):
+        return f"<PushMessageRecord(stock_code={self.stock_code}, type={self.message_type}, time={self.created_at})>"
 
 
 class DatabaseManager:
@@ -455,6 +481,63 @@ class DatabaseManager:
                 session.rollback()
                 logger.error(f"保存AI推荐数据失败: {e}", exc_info=True)
                 raise
+    
+    def get_all_recommendations(self) -> List[AIStockRecommendation]:
+        """获取所有AI推荐记录"""
+        with self.get_session() as session:
+            results = session.execute(
+                select(AIStockRecommendation)
+                .order_by(desc(AIStockRecommendation.created_at))
+            ).scalars().all()
+            return list(results)
+
+    def save_push_record(self, record: PushMessageRecord) -> PushMessageRecord:
+        """
+        保存消息推送记录
+        
+        Args:
+            record: PushMessageRecord 对象
+            
+        Returns:
+            保存后的 PushMessageRecord 对象
+        """
+        with self.get_session() as session:
+            try:
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+                logger.info(f"成功保存推送记录: {record.stock_code}, 类型: {record.message_type}")
+                return record
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存推送记录失败: {e}", exc_info=True)
+                raise
+
+    def has_pushed_today(self, stock_code: str, message_type: int) -> bool:
+        """
+        检查当天是否已推送过相同类型的消息
+        
+        Args:
+            stock_code: 股票代码
+            message_type: 消息类型
+            
+        Returns:
+            True 表示已推送，False 表示未推送
+        """
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        with self.get_session() as session:
+            result = session.execute(
+                select(PushMessageRecord).where(
+                    and_(
+                        PushMessageRecord.stock_code == stock_code,
+                        PushMessageRecord.message_type == message_type,
+                        PushMessageRecord.created_at >= today_start
+                    )
+                )
+            ).first()
+            
+            return result is not None
 
     def get_analysis_context(
         self, 
@@ -603,3 +686,27 @@ if __name__ == "__main__":
         print(f"保存成功，ID: {saved_rec.id}")
     except Exception as e:
         print(f"保存 AI 推荐失败: {e}")
+
+    # 测试 PushMessageRecord 保存
+    print("\n=== PushMessageRecord 测试 ===")
+    try:
+        push_record = PushMessageRecord(
+            stock_code='600000',
+            stock_name='浦发银行',
+            sector='银行',
+            message_type=2, # 触发买入
+            message_content='浦发银行当前价格 7.10，进入买入区间 [7.00, 7.20]',
+            current_price=7.10,
+            trade_range='[7.00, 7.20]'
+        )
+        saved_push = db.save_push_record(push_record)
+        print(f"保存推送记录成功，ID: {saved_push.id}")
+        
+        has_pushed = db.has_pushed_today('600000', 2)
+        print(f"今天是否已推送过类型2: {has_pushed}")
+        
+        has_pushed_other = db.has_pushed_today('600000', 3)
+        print(f"今天是否已推送过类型3: {has_pushed_other}")
+        
+    except Exception as e:
+        print(f"保存推送记录失败: {e}")

@@ -195,12 +195,21 @@ logger = logging.getLogger(__name__)
 
 
 # User-Agent 池，用于随机轮换
+# 更新时间：2024-05
 USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    # Windows Chrome
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    # Windows Edge
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+    # Mac Chrome
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    # Mac Safari
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    # Windows Firefox
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+    # Linux Chrome
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 ]
 
 
@@ -281,7 +290,7 @@ class AkshareFetcher(BaseFetcher):
         self.sleep_min = sleep_min
         self.sleep_max = sleep_max
         self._last_request_time: Optional[float] = None
-    
+
     def _set_random_user_agent(self) -> None:
         """
         设置随机 User-Agent
@@ -290,11 +299,21 @@ class AkshareFetcher(BaseFetcher):
         这是关键的反爬策略之一
         """
         try:
-            import akshare as ak
-            # akshare 内部使用 requests，我们通过环境变量或直接设置来影响
-            # 实际上 akshare 可能不直接暴露 session，这里通过 fake_useragent 作为补充
+            # 尝试设置 requests 的默认 headers
+            # 注意：akshare 内部可能每次请求都新建 session，或者使用全局 session
+            # 这里我们尝试修改 requests 库的默认 headers，虽然这不一定对所有 akshare 接口生效
+            # 但对于部分直接使用 requests.get 的接口可能有效
+            # 更可靠的方式是 akshare 提供自定义 session 的能力，但目前 akshare 主要是函数式调用
+            
+            # 另外，我们可以尝试设置环境变量，某些库可能会读取
             random_ua = random.choice(USER_AGENTS)
-            logger.debug(f"设置 User-Agent: {random_ua[:50]}...")
+            os.environ['USER_AGENT'] = random_ua
+            
+            # 尝试 monkey patch requests (如果需要更强力的注入)
+            # 但为了稳定性，我们暂时只做日志记录，并依赖 akshare 自身的机制（如果有）
+            # 或者在调用具体函数前，如果 akshare 允许传入 headers... (通常不允许)
+            
+            logger.debug(f"准备使用 User-Agent: {random_ua[:50]}...")
         except Exception as e:
             logger.debug(f"设置 User-Agent 失败: {e}")
     
@@ -361,7 +380,7 @@ class AkshareFetcher(BaseFetcher):
         
         # 防封禁策略 2: 强制休眠
         self._enforce_rate_limit()
-        
+
         logger.info(f"[API调用] ak.stock_zh_a_hist(symbol={stock_code}, period=daily, "
                    f"start_date={start_date.replace('-', '')}, end_date={end_date.replace('-', '')}, adjust=qfq)")
         
@@ -425,7 +444,7 @@ class AkshareFetcher(BaseFetcher):
         
         # 防封禁策略 2: 强制休眠
         self._enforce_rate_limit()
-        
+
         logger.info(f"[API调用] ak.fund_etf_hist_em(symbol={stock_code}, period=daily, "
                    f"start_date={start_date.replace('-', '')}, end_date={end_date.replace('-', '')}, adjust=qfq)")
         
@@ -487,7 +506,7 @@ class AkshareFetcher(BaseFetcher):
         
         # 防封禁策略 2: 强制休眠
         self._enforce_rate_limit()
-        
+
         # 确保代码格式正确（5位数字）
         code = stock_code.lower().replace('hk', '').zfill(5)
         
@@ -599,77 +618,98 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
         
-        try:
-            # 1. 获取个股基本信息 (名称, 市值, PE, PB)
-            # 接口: ak.stock_individual_info_em(symbol="000001")
-            with no_proxy_context():
-                df_info = ak.stock_individual_info_em(symbol=stock_code)
-            
-            info_map = {}
-            if df_info is not None and not df_info.empty:
-                info_map = dict(zip(df_info['item'], df_info['value']))
-            
-            stock_name = str(info_map.get('股票简称', ''))
-            
-            # 2. 获取最新日线数据 (价格, 涨跌幅, 换手率, 量比等)
-            # 接口: ak.stock_zh_a_hist
-            # 获取最近 15 天，确保能取到数据（避开长假）
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
-            
-            with no_proxy_context():
-                df_hist = ak.stock_zh_a_hist(
-                    symbol=stock_code, 
-                    period="daily", 
-                    start_date=start_date, 
-                    end_date=end_date, 
-                    adjust="qfq"
-                )
-            
-            if df_hist is None or df_hist.empty:
-                logger.warning(f"[API返回] 未获取到 {stock_code} 的行情数据 (stock_zh_a_hist)")
-                return None
-                
-            # 取最新的一行
-            latest = df_hist.iloc[-1]
-            
-            # 安全转换函数
-            def safe_float(val, default=0.0):
-                try:
-                    if pd.isna(val) or val in ['-', '']:
-                        return default
-                    if isinstance(val, str):
-                        val = val.replace(',', '').replace('亿', '')
-                    return float(val)
-                except:
+        # 增加重试逻辑
+        max_retries = 5
+        last_error = None
+        
+        # 安全转换函数
+        def safe_float(val, default=0.0):
+            try:
+                if pd.isna(val) or val in ['-', '']:
                     return default
+                if isinstance(val, str):
+                    val = val.replace(',', '').replace('亿', '')
+                return float(val)
+            except:
+                return default
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 防封禁策略
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
 
-            # 3. 构建 RealtimeQuote 对象
-            quote = RealtimeQuote(
-                code=stock_code,
-                name=stock_name,
-                price=safe_float(latest.get('收盘')),
-                change_pct=safe_float(latest.get('涨跌幅')),
-                change_amount=safe_float(latest.get('涨跌额')),
-                volume_ratio=0.0, # hist 接口通常不包含量比
-                turnover_rate=safe_float(latest.get('换手率')),
-                amplitude=safe_float(latest.get('振幅')),
-                pe_ratio=safe_float(info_map.get('市盈率(动)')),
-                pb_ratio=safe_float(info_map.get('市净率')),
-                total_mv=safe_float(info_map.get('总市值')),
-                circ_mv=safe_float(info_map.get('流通市值')),
-                change_60d=0.0, 
-                high_52w=0.0,
-                low_52w=0.0
-            )
-            
-            logger.info(f"[实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"PE={quote.pe_ratio}, PB={quote.pb_ratio}")
-            return quote
+                # 1. 获取个股基本信息 (名称, 市值, PE, PB)
+                # 接口: ak.stock_individual_info_em(symbol="000001")
+                # 注意：这个接口比较脆弱，如果失败，尝试降级
+                info_map = {}
+                stock_name = ""
+                
+                try:
+                    with no_proxy_context():
+                        df_info = ak.stock_individual_info_em(symbol=stock_code)
+                    
+                    if df_info is not None and not df_info.empty:
+                        info_map = dict(zip(df_info['item'], df_info['value']))
+                        stock_name = str(info_map.get('股票简称', ''))
+                except Exception as e:
+                    logger.warning(f"[API警告] 获取个股信息失败，尝试仅获取行情: {e}")
+                
+                # 2. 获取最新日线数据 (价格, 涨跌幅, 换手率, 量比等)
+                # 接口: ak.stock_zh_a_hist
+                # 获取最近 15 天，确保能取到数据（避开长假）
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
+                
+                with no_proxy_context():
+                    df_hist = ak.stock_zh_a_hist(
+                        symbol=stock_code, 
+                        period="daily", 
+                        start_date=start_date, 
+                        end_date=end_date, 
+                        adjust="qfq"
+                    )
+                
+                if df_hist is None or df_hist.empty:
+                    logger.warning(f"[API返回] 未获取到 {stock_code} 的行情数据 (stock_zh_a_hist)")
+                    # 如果行情数据都获取不到，那就真的失败了
+                    raise DataFetchError("行情数据为空")
+                    
+                # 取最新的一行
+                latest = df_hist.iloc[-1]
 
-        except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 实时行情失败: {e}")
-            return None
+                # 3. 构建 RealtimeQuote 对象
+                quote = RealtimeQuote(
+                    code=stock_code,
+                    name=stock_name,
+                    price=safe_float(latest.get('收盘')),
+                    change_pct=safe_float(latest.get('涨跌幅')),
+                    change_amount=safe_float(latest.get('涨跌额')),
+                    volume_ratio=0.0, # hist 接口通常不包含量比
+                    turnover_rate=safe_float(latest.get('换手率')),
+                    amplitude=safe_float(latest.get('振幅')),
+                    pe_ratio=safe_float(info_map.get('市盈率(动)')),
+                    pb_ratio=safe_float(info_map.get('市净率')),
+                    total_mv=safe_float(info_map.get('总市值')),
+                    circ_mv=safe_float(info_map.get('流通市值')),
+                    change_60d=0.0, 
+                    high_52w=0.0,
+                    low_52w=0.0
+                )
+                
+                logger.info(f"[实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
+                           f"PE={quote.pe_ratio}, PB={quote.pb_ratio}")
+                return quote
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[API错误] 获取 {stock_code} 实时行情失败 (attempt {attempt}/{max_retries}): {e}")
+                # 指数退避：2, 4, 8, 16, 32 秒
+                sleep_time = min(2 ** attempt, 32)
+                time.sleep(sleep_time)
+        
+        logger.error(f"[API错误] 获取 {stock_code} 实时行情最终失败: {last_error}")
+        return None
     
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[RealtimeQuote]:
         """
@@ -792,7 +832,7 @@ class AkshareFetcher(BaseFetcher):
             # 防封禁策略
             self._set_random_user_agent()
             self._enforce_rate_limit()
-            
+
             # 确保代码格式正确（5位数字）
             code = stock_code.lower().replace('hk', '').zfill(5)
             
@@ -876,7 +916,7 @@ class AkshareFetcher(BaseFetcher):
             # 防封禁策略
             self._set_random_user_agent()
             self._enforce_rate_limit()
-            
+
             logger.info(f"[API调用] ak.stock_cyq_em(symbol={stock_code}) 获取筹码分布...")
             import time as _time
             api_start = _time.time()

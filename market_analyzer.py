@@ -123,8 +123,14 @@ class MarketAnalyzer:
         # 1. 获取主要指数行情
         overview.indices = self._get_main_indices()
         
+        # 避免请求过快
+        time.sleep(2)
+        
         # 2. 获取涨跌统计
         self._get_market_statistics(overview)
+        
+        # 避免请求过快
+        time.sleep(2)
         
         # 3. 获取板块涨跌榜
         self._get_sector_rankings(overview)
@@ -144,7 +150,9 @@ class MarketAnalyzer:
                 last_error = e
                 logger.warning(f"[大盘] {name} 获取失败 (attempt {attempt}/{attempts}): {e}")
                 if attempt < attempts:
-                    time.sleep(min(2 ** attempt, 10))
+                    # 增加等待时间: 3s, 6s, 12s...
+                    sleep_time = min(3 * (2 ** (attempt - 1)), 30)
+                    time.sleep(sleep_time)
         logger.error(f"[大盘] {name} 最终失败: {last_error}")
         return None
     
@@ -198,13 +206,32 @@ class MarketAnalyzer:
         try:
             logger.info("[大盘] 获取市场涨跌统计...")
             
-            # 获取全部A股实时行情
-            df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情", attempts=3)
+            # 1. 尝试获取全部A股实时行情 (东方财富接口)
+            # 增加重试次数到5次，因为数据量大且容易超时
+            df = self._call_akshare_with_retry(ak.stock_zh_a_spot_em, "A股实时行情(东财)", attempts=5)
+            
+            # 2. 如果东财接口失败，尝试新浪接口作为备选
+            if df is None or df.empty:
+                logger.warning("[大盘] 东财接口失败，尝试新浪接口(ak.stock_zh_a_spot)...")
+                df = self._call_akshare_with_retry(ak.stock_zh_a_spot, "A股实时行情(新浪)", attempts=3)
             
             if df is not None and not df.empty:
-                # 涨跌统计
-                change_col = '涨跌幅'
-                if change_col in df.columns:
+                # 统一列名处理
+                change_col = None
+                amount_col = None
+                
+                # 检查列名
+                if '涨跌幅' in df.columns:
+                    change_col = '涨跌幅'
+                elif 'changepercent' in df.columns:
+                    change_col = 'changepercent'
+                    
+                if '成交额' in df.columns:
+                    amount_col = '成交额'
+                elif 'amount' in df.columns:
+                    amount_col = 'amount'
+                
+                if change_col:
                     df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
                     overview.up_count = len(df[df[change_col] > 0])
                     overview.down_count = len(df[df[change_col] < 0])
@@ -214,15 +241,15 @@ class MarketAnalyzer:
                     overview.limit_up_count = len(df[df[change_col] >= 9.9])
                     overview.limit_down_count = len(df[df[change_col] <= -9.9])
                 
-                # 两市成交额
-                amount_col = '成交额'
-                if amount_col in df.columns:
+                if amount_col:
                     df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
                     overview.total_amount = df[amount_col].sum() / 1e8  # 转为亿元
                 
                 logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
                           f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
                           f"成交额:{overview.total_amount:.0f}亿")
+            else:
+                logger.error("[大盘] 无法获取市场统计数据(所有接口均失败)")
                 
         except Exception as e:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
@@ -233,7 +260,8 @@ class MarketAnalyzer:
             logger.info("[大盘] 获取板块涨跌榜...")
             
             # 获取行业板块行情，使用 stock_board_industry_spot_em
-            df = self._call_akshare_with_retry(ak.stock_board_industry_spot_em, "行业板块行情", attempts=3)
+            # 增加重试次数到5次
+            df = self._call_akshare_with_retry(ak.stock_board_industry_spot_em, "行业板块行情", attempts=5)
             
             if df is not None and not df.empty:
                 change_col = '涨跌幅'

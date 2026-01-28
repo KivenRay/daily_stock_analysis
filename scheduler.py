@@ -25,6 +25,7 @@ TASK_REGISTRY: Dict[str, str] = {
     "full_analysis": "main.run_full_analysis",
     "market_review": "main.run_market_review",
     "scan_market": "scanner_cn.scan_market",
+    "price_monitor": "price_monitor.run_price_monitor_task", # 新增价格监控任务
 }
 
 def _run_task(task_name: str, task_config: Dict[str, Any]):
@@ -72,6 +73,8 @@ def _run_task(task_name: str, task_config: Dict[str, Any]):
             search_service = get_search_service()
             task_func(notifier, analyzer, search_service)
         elif task_name == "scan_market":
+            task_func()
+        elif task_name == "price_monitor":
             task_func()
         else:
             task_func()
@@ -140,6 +143,19 @@ def setup_scheduler():
             
         except Exception as e:
             logger.error(f"设置任务 '{task_type}' (索引 {task_idx}) 失败: {e}", exc_info=True)
+
+    # === 新增：自动启动价格监控任务 ===
+    # 价格监控不同于普通定时任务，它需要高频运行（如每分钟）
+    # 因此我们不通过 config.yml 配置，而是直接在这里硬编码启动
+    # try:
+    #     from price_monitor import PriceMonitor
+    #     monitor = PriceMonitor()
+    #     # 每分钟执行一次监控
+    #     schedule.every(3).minutes.do(monitor.run_once).tag("price_monitor_auto")
+    #     logger.info("✅ 已自动设置价格监控任务，每1分钟执行一次。")
+    # except Exception as e:
+    #     logger.error(f"❌ 设置价格监控任务失败: {e}", exc_info=True)
+
 
 def run_scheduler():
     """

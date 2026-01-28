@@ -959,8 +959,8 @@ def scan_market():
 
     if not df.empty:
         try:
-            df.to_excel(output_file, index=False)
-            logger.info(f"📊 结果已保存到: {output_file}")
+            # df.to_excel(output_file, index=False)
+            # logger.info(f"📊 结果已保存到: {output_file}")
             save_strong_stocks_to_db(df) # 调用保存到数据库的函数
         except PermissionError:
             logger.error(f"❌ 无法写入 {output_file}，请关闭 Excel 文件后重试。")
