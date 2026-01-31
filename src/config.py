@@ -17,6 +17,13 @@ from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
 
+def setup_env():
+    """初始化环境变量（支持从 .env 加载）"""
+    # src/config.py -> src/ -> root
+    env_path = Path(__file__).parent.parent / '.env'
+    load_dotenv(dotenv_path=env_path)
+
+
 @dataclass
 class Config:
     """
@@ -107,6 +114,7 @@ class Config:
     # 消息长度限制（字节）- 超长自动分批发送
     feishu_max_bytes: int = 20000  # 飞书限制约 20KB，默认 20000 字节
     wechat_max_bytes: int = 4000   # 企业微信限制 4096 字节，默认 4000 字节
+    wechat_msg_type: str = "markdown"  # 企业微信消息类型，默认 markdown 类型
     
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
@@ -215,10 +223,8 @@ class Config:
         2. .env 文件
         3. 代码中的默认值
         """
-        # 加载项目根目录下的 .env 文件
-        # src/config.py -> src/ -> root
-        env_path = Path(__file__).parent.parent / '.env'
-        load_dotenv(dotenv_path=env_path)
+        # 确保环境变量已加载
+        setup_env()
 
         # === 智能代理配置 (关键修复) ===
         # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
@@ -283,6 +289,16 @@ class Config:
         
         serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
         serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
+
+        # 企微消息类型与最大字节数逻辑
+        wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
+        wechat_msg_type_lower = wechat_msg_type.lower()
+        wechat_max_bytes_env = os.getenv('WECHAT_MAX_BYTES')
+        if wechat_max_bytes_env not in (None, ''):
+            wechat_max_bytes = int(wechat_max_bytes_env)
+        else:
+            # 未显式配置时，根据消息类型选择默认字节数
+            wechat_max_bytes = 2048 if wechat_msg_type_lower == 'text' else 4000
         
         return cls(
             stock_list=stock_list,
@@ -323,7 +339,8 @@ class Config:
             report_type=os.getenv('REPORT_TYPE', 'simple').lower(),
             analysis_delay=float(os.getenv('ANALYSIS_DELAY', '0')),
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
-            wechat_max_bytes=int(os.getenv('WECHAT_MAX_BYTES', '4000')),
+            wechat_max_bytes=wechat_max_bytes,
+            wechat_msg_type=wechat_msg_type_lower,
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
