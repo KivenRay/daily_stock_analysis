@@ -39,6 +39,7 @@ import argparse
 import logging
 import sys
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -206,6 +207,12 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='仅启动 WebUI 服务，不自动执行分析（通过 /analysis API 手动触发）'
     )
+
+    parser.add_argument(
+        '--no-context-snapshot',
+        action='store_true',
+        help='不保存分析上下文快照'
+    )
     
     return parser.parse_args()
 
@@ -226,9 +233,16 @@ def run_full_analysis(
             config.single_stock_notify = True
         
         # 创建调度器
+        save_context_snapshot = None
+        if getattr(args, 'no_context_snapshot', False):
+            save_context_snapshot = False
+        query_id = uuid.uuid4().hex
         pipeline = StockAnalysisPipeline(
             config=config,
-            max_workers=args.workers
+            max_workers=args.workers,
+            query_id=query_id,
+            query_source="cli",
+            save_context_snapshot=save_context_snapshot
         )
         
         # 1. 运行个股分析
@@ -251,7 +265,8 @@ def run_full_analysis(
             review_result = run_market_review(
                 notifier=pipeline.notifier,
                 analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service
+                search_service=pipeline.search_service,
+                send_notification=not args.no_notify
             )
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
@@ -297,7 +312,8 @@ def run_full_analysis(
                 if doc_url:
                     logger.info(f"飞书云文档创建成功: {doc_url}")
                     # 可选：将文档链接也推送到群里
-                    pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
+                    if not args.no_notify:
+                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
 
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
@@ -413,10 +429,20 @@ def main() -> int:
                     serpapi_keys=config.serpapi_keys
                 )
             
-            if config.gemini_api_key:
+            if config.gemini_api_key or config.openai_api_key:
                 analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
+                if not analyzer.is_available():
+                    logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
+                    analyzer = None
+            else:
+                logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
             
-            run_market_review(notifier, analyzer, search_service)
+            run_market_review(
+                notifier=notifier, 
+                analyzer=analyzer, 
+                search_service=search_service,
+                send_notification=not args.no_notify
+            )
             return 0
         
         # 模式2: 定时任务模式
