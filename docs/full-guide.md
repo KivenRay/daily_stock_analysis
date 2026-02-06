@@ -70,6 +70,7 @@ daily_stock_analysis/
 | `FEISHU_WEBHOOK_URL` | 飞书 Webhook URL | 可选 |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（@BotFather 获取） | 可选 |
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (用于发送到子话题) | 可选 |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL（[创建方法](https://support.discord.com/hc/en-us/articles/228383668)） | 可选 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
 | `DISCORD_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
@@ -77,6 +78,7 @@ daily_stock_analysis/
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
+| `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook 的 Bearer Token（用于需要认证的 Webhook） | 可选 |
 
@@ -97,6 +99,7 @@ daily_stock_analysis/
 | `STOCK_LIST` | 自选股代码，如 `600519,300750,002594` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 推荐 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
+| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 备用搜索 | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 
@@ -154,6 +157,7 @@ daily_stock_analysis/
 | `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook URL | 可选 |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 可选 |
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID | 可选 |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可选 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
 | `DISCORD_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
@@ -165,6 +169,7 @@ daily_stock_analysis/
 | `PUSHOVER_USER_KEY` | Pushover 用户 Key | 可选 |
 | `PUSHOVER_API_TOKEN` | Pushover API Token | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（国内推送服务） | 可选 |
+| `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey | 可选 |
 
 #### 飞书云文档配置（可选，解决消息截断问题）
 
@@ -186,6 +191,7 @@ daily_stock_analysis/
 |--------|------|:----:|
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key（推荐） | 推荐 |
 | `BOCHA_API_KEYS` | 博查搜索 API Key（中文优化） | 可选 |
+| `BRAVE_API_KEYS` | Brave Search API Key（美股优化） | 可选 |
 | `SERPAPI_API_KEYS` | SerpAPI 备用搜索 | 可选 |
 
 ### 数据源配置
@@ -209,6 +215,9 @@ daily_stock_analysis/
 
 ## Docker 部署
 
+Dockerfile 使用多阶段构建，前端会在构建镜像时自动打包并内置到 `static/`。
+如需覆盖静态资源，可挂载本地 `static/` 到容器内 `/app/static`。
+
 ### 快速启动
 
 ```bash
@@ -223,6 +232,7 @@ vim .env  # 填入 API Key 和配置
 # 3. 启动容器
 docker-compose -f ./docker/docker-compose.yml up -d webui      # WebUI 模式（推荐）
 docker-compose -f ./docker/docker-compose.yml up -d analyzer   # 定时任务模式
+docker-compose -f ./docker/docker-compose.yml up -d server     # FastAPI Web模式（和WebUI模式占用相同端口注意避免冲突）
 docker-compose -f ./docker/docker-compose.yml up -d            # 同时启动两种模式
 
 # 4. 访问 WebUI
@@ -238,7 +248,10 @@ docker-compose -f ./docker/docker-compose.yml logs -f webui
 |------|------|------|
 | `docker-compose -f ./docker/docker-compose.yml up -d webui` | WebUI 模式，手动触发分析 | 8000 |
 | `docker-compose -f ./docker/docker-compose.yml up -d analyzer` | 定时任务模式，每日自动执行 | - |
+| `docker-compose -f ./docker/docker-compose.yml up -d server` | FastAPI 模式，提供 API 与静态资源 | 8000 |
 | `docker-compose -f ./docker/docker-compose.yml up -d` | 同时启动两种模式 | 8000 |
+
+> 注意：WebUI 与 FastAPI 默认端口都是 8000，若需同时启动请设置 `WEBUI_PORT` 与 `API_PORT`。
 
 ### Docker Compose 配置
 
@@ -248,17 +261,19 @@ docker-compose -f ./docker/docker-compose.yml logs -f webui
 version: '3.8'
 
 x-common: &common
-  build: .
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
   restart: unless-stopped
   env_file:
-    - .env
+    - ../.env
   environment:
     - TZ=Asia/Shanghai
   volumes:
-    - ./data:/app/data
-    - ./logs:/app/logs
-    - ./reports:/app/reports
-    - ./.env:/app/.env
+    - ../data:/app/data
+    - ../logs:/app/logs
+    - ../reports:/app/reports
+    - ../.env:/app/.env
 
 services:
   # 定时任务模式
@@ -273,6 +288,14 @@ services:
     command: ["python", "main.py", "--webui-only"]
     ports:
       - "8000:8000"
+
+  # FastAPI 模式
+  server:
+    <<: *common
+    container_name: stock-server
+    command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
 ```
 
 ### 常用命令
@@ -283,6 +306,7 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 # 查看日志
 docker-compose -f ./docker/docker-compose.yml logs -f webui
+docker-compose -f ./docker/docker-compose.yml logs -f server
 
 # 停止服务
 docker-compose -f ./docker/docker-compose.yml down
@@ -295,8 +319,9 @@ docker-compose -f ./docker/docker-compose.yml up -d webui
 ### 手动构建镜像
 
 ```bash
-docker build -t stock-analysis .
+docker build -f docker/Dockerfile -t stock-analysis .
 docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --webui-only
+docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
 
 ---
@@ -386,6 +411,7 @@ crontab -e
 2. 获取 Bot Token
 3. 获取 Chat ID（可通过 @userinfobot）
 4. 设置 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`
+5. (可选) 如需发送到 Topic，设置 `TELEGRAM_MESSAGE_THREAD_ID` (从 Topic 链接末尾获取)
 
 ### 邮件
 
