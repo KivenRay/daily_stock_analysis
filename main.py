@@ -466,20 +466,32 @@ def main() -> int:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
             
+            # from src.scheduler import run_with_schedule
+            #
+            # def scheduled_task():
+            #     run_full_analysis(config, args, stock_codes)
+            #
+            # run_with_schedule(
+            #     task=scheduled_task,
+            #     schedule_time=config.schedule_time,
+            #     run_immediately=True  # 启动时先执行一次
+            # )
+
+            from src.search_stock import StockAnalyzer
             from src.scheduler import run_with_schedule
-            
+
             def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
-            
+                StockAnalyzer().scan_strong_stocks()
+
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
-                run_immediately=True  # 启动时先执行一次
+                run_immediately=False  # 启动时先执行一次
             )
             return 0
         
         # 模式3: 正常单次运行
-        run_full_analysis(config, args, stock_codes)
+        #run_full_analysis(config, args, stock_codes)
         
         logger.info("\n程序执行完成")
         

@@ -23,6 +23,7 @@ def setup_env():
     env_path = Path(__file__).parent.parent / '.env'
     load_dotenv(dotenv_path=env_path)
 
+ROOT_DIR = Path(__file__).parent.parent.parent.resolve()
 
 @dataclass
 class Config:
@@ -126,13 +127,13 @@ class Config:
     wechat_msg_type: str = "markdown"  # 企业微信消息类型，默认 markdown 类型
     
     # === 数据库配置 ===
-    database_path: str = "./data/stock_analysis.db"
+    database_path: str = ROOT_DIR /"resource/data/stock_analysis.db"
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
     
     # === 日志配置 ===
-    log_dir: str = "./logs"  # 日志文件目录
+    log_dir: str = ROOT_DIR /"resource/logs"  # 日志文件目录
     log_level: str = "INFO"  # 日志级别
     
     # === 系统配置 ===

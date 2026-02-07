@@ -20,6 +20,9 @@ WORKDIR /app
 
 # 设置时区为上海
 ENV TZ=Asia/Shanghai
+# 设置代理环境变量
+ENV HTTP_PROXY=""
+ENV HTTPS_PROXY=""
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 安装系统依赖
@@ -44,7 +47,7 @@ COPY src/ ./src/
 COPY --from=web-builder /app/static ./static/
 
 # 创建数据目录
-RUN mkdir -p /app/data /app/logs /app/reports
+RUN mkdir -p /app/resource/data /app/resource/logs /app/resource/reports
 
 # 设置环境变量默认值
 ENV PYTHONUNBUFFERED=1
@@ -58,7 +61,7 @@ ENV WEBUI_PORT=8000
 EXPOSE 8000
 
 # 数据卷（持久化数据）
-VOLUME ["/app/data", "/app/logs", "/app/reports"]
+VOLUME ["/app/resource", "/app/.env"]
 
 # 健康检查（支持 WebUI / FastAPI 模式）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
@@ -66,4 +69,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     || python -c "import sys; sys.exit(0)"
 
 # 默认命令（可被覆盖）
-CMD ["python", "main.py", "--schedule"]
+CMD ["python", "main.py", " --webui-only"]

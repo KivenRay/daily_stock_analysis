@@ -17,7 +17,7 @@ import json
 import logging
 import re
 from datetime import datetime, date, timedelta
-from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Union, Tuple
 from pathlib import Path
 
 import pandas as pd
@@ -35,6 +35,8 @@ from sqlalchemy import (
     select,
     and_,
     desc,
+    func,
+    Text,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -125,7 +127,6 @@ class StockDaily(Base):
             'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
         }
-
 
 class NewsIntel(Base):
     """
@@ -239,6 +240,141 @@ class AnalysisHistory(Base):
         }
 
 
+class StockInfo(Base):
+    """
+    股票基础信息表
+
+    对应 SQL:
+    CREATE TABLE stock_info (
+        id INTEGER NOT NULL,
+        ts_code VARCHAR(20) NOT NULL,
+        symbol VARCHAR(10),
+        name VARCHAR(50),
+        area VARCHAR(50),
+        industry VARCHAR(50),
+        fullname VARCHAR(100),
+        enname VARCHAR(100),
+        cnspell VARCHAR(50),
+        market VARCHAR(20),
+        exchange VARCHAR(20),
+        curr_type VARCHAR(20),
+        list_status VARCHAR(10),
+        list_date VARCHAR(20),
+        delist_date VARCHAR(20),
+        is_hs VARCHAR(10),
+        act_name VARCHAR(100),
+        act_ent_type VARCHAR(100),
+        created_at DATETIME,
+        updated_at DATETIME,
+        PRIMARY KEY (id),
+        UNIQUE (ts_code)
+    );
+    """
+    __tablename__ = 'stock_info'
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 基础信息
+    ts_code = Column(String(20), unique=True, index=True, nullable=False)  # TS代码 (唯一约束)
+    symbol = Column(String(10), index=True)  # 股票代码
+    name = Column(String(50))  # 股票名称
+    area = Column(String(50))  # 地域
+    industry = Column(String(50))  # 所属行业
+    fullname = Column(String(100))  # 股票全称
+    enname = Column(String(100))  # 英文全称
+    cnspell = Column(String(50))  # 拼音缩写
+    market = Column(String(20))  # 市场类型
+    exchange = Column(String(20))  # 交易所代码
+    curr_type = Column(String(20))  # 交易货币
+    list_status = Column(String(10))  # 上市状态 L上市 D退市 P暂停上市
+    list_date = Column(String(20))  # 上市日期
+    delist_date = Column(String(20))  # 退市日期
+    is_hs = Column(String(10))  # 是否沪深港通标的，N否 H沪股通 S深股通
+    act_name = Column(String(100))  # 实控人名称
+    act_ent_type = Column(String(100))  # 实控人企业性质
+
+    # 更新时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f"<StockInfo(ts_code={self.ts_code}, name={self.name})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'ts_code': self.ts_code,
+            'symbol': self.symbol,
+            'name': self.name,
+            'area': self.area,
+            'industry': self.industry,
+            'fullname': self.fullname,
+            'enname': self.enname,
+            'cnspell': self.cnspell,
+            'market': self.market,
+            'exchange': self.exchange,
+            'curr_type': self.curr_type,
+            'list_status': self.list_status,
+            'list_date': self.list_date,
+            'delist_date': self.delist_date,
+            'is_hs': self.is_hs,
+            'act_name': self.act_name,
+            'act_ent_type': self.act_ent_type,
+        }
+
+
+class StrongStockInfo(Base):
+    """
+    强势股信息表
+
+    存储筛选出的强势股信息
+    """
+    __tablename__ = 'strong_stock_info'
+
+    # 主键
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票代码（唯一主键）
+    code = Column(String(10), unique=True, nullable=False, index=True)
+
+    # 股票名称
+    name = Column(String(50))
+
+    # 最新价格
+    last_price = Column(String(20))
+
+    # 均线数据
+    ma5 = Column(String(20))
+    ma10 = Column(String(20))
+    ma20 = Column(String(20))
+
+    # 所属行业
+    industry = Column(String(50))
+
+    # AI 分析结果
+    ai_analysis = Column(Text)
+    
+    # 策略匹配
+    strategy_match = Column(String(500))
+    
+    # 市值（亿）
+    market_value = Column(Float)
+    
+    # 市盈率
+    pe_ratio = Column(Float)
+    
+    # 筛选日期
+    date = Column(Date, default=date.today)
+
+    # 更新时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f"<StrongStockInfo(code={self.code}, name={self.name})>"
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -251,7 +387,7 @@ class DatabaseManager:
     
     _instance: Optional['DatabaseManager'] = None
     _initialized: bool = False
-    
+
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
         if cls._instance is None:
@@ -288,6 +424,7 @@ class DatabaseManager:
         )
         
         # 创建所有表
+        # 注意：SQLAlchemy 会自动生成 CREATE TABLE 语句并执行
         Base.metadata.create_all(self._engine)
 
         self._initialized = True
@@ -648,22 +785,22 @@ class DatabaseManager:
     ) -> Tuple[List[AnalysisHistory], int]:
         """
         分页查询分析历史记录（带总数）
-        
+
         Args:
             code: 股票代码筛选
             start_date: 开始日期（含）
             end_date: 结束日期（含）
             offset: 偏移量（跳过前 N 条）
             limit: 每页数量
-            
+
         Returns:
             Tuple[List[AnalysisHistory], int]: (记录列表, 总数)
         """
         from sqlalchemy import func
-        
+
         with self.get_session() as session:
             conditions = []
-            
+
             if code:
                 conditions.append(AnalysisHistory.code == code)
             if start_date:
@@ -672,14 +809,14 @@ class DatabaseManager:
             if end_date:
                 # created_at < end_date+1 00:00:00 (即 <= end_date 23:59:59)
                 conditions.append(AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time()))
-            
+
             # 构建 where 子句
             where_clause = and_(*conditions) if conditions else True
-            
+
             # 查询总数
             total_query = select(func.count(AnalysisHistory.id)).where(where_clause)
             total = session.execute(total_query).scalar() or 0
-            
+
             # 查询分页数据
             data_query = (
                 select(AnalysisHistory)
@@ -689,9 +826,9 @@ class DatabaseManager:
                 .limit(limit)
             )
             results = session.execute(data_query).scalars().all()
-            
+
             return list(results), total
-    
+
     def get_data_range(
         self, 
         code: str, 
@@ -1025,29 +1162,27 @@ if __name__ == "__main__":
     print("=== 数据库测试 ===")
     print(f"数据库初始化成功")
     
-    # 测试检查今日数据
-    has_data = db.has_today_data('600519')
-    print(f"茅台今日是否有数据: {has_data}")
-    
-    # 测试保存数据
-    test_df = pd.DataFrame({
-        'date': [date.today()],
-        'open': [1800.0],
-        'high': [1850.0],
-        'low': [1780.0],
-        'close': [1820.0],
-        'volume': [10000000],
-        'amount': [18200000000],
-        'pct_chg': [1.5],
-        'ma5': [1810.0],
-        'ma10': [1800.0],
-        'ma20': [1790.0],
-        'volume_ratio': [1.2],
-    })
-    
-    saved = db.save_daily_data(test_df, '600519', 'TestSource')
-    print(f"保存测试数据: {saved} 条")
-    
-    # 测试获取上下文
-    context = db.get_analysis_context('600519')
-    print(f"分析上下文: {context}")
+    # 调试：打印所有 list_status 的值
+    with db.get_session() as session:
+        # 统计 list_status 的分布
+        status_counts = session.execute(
+            select(StockInfo.list_status, func.count(StockInfo.id))
+            .group_by(StockInfo.list_status)
+        ).all()
+
+        print("\n=== 数据库中 list_status 分布 ===")
+        if not status_counts:
+            print("stock_info 表为空！")
+        for status, count in status_counts:
+            print(f"状态: '{status}', 数量: {count}")
+
+        # 打印前5条数据
+        print("\n=== 前5条数据示例 ===")
+        sample_data = session.execute(select(StockInfo).limit(5)).scalars().all()
+        for item in sample_data:
+            print(f"TS代码: {item.ts_code}, 状态: '{item.list_status}'")
+
+    # 测试查询股票信息
+    print("\n=== 测试查询 ===")
+    stock_infos = db.get_stock_info(list_status='L')
+    print(f"查询 list_status='L' 结果数量: {len(stock_infos)}")
