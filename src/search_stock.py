@@ -245,7 +245,9 @@ class StockAnalyzer:
                 'ma10': str(ma10),
                 'ma20': str(ma20),
                 'industry': industry,
-                'strategy_match': f"策略匹配: {strategy_name}"
+                'strategy_match': strategy_name,
+                'market_value': market_value_yi,
+                'pe_ratio': quote.pe_ratio
             }
             
             self.db.save_strong_stock(strong_stock_data)

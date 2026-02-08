@@ -47,7 +47,7 @@ const StrongStocksPage: React.FC = () => {
         }
     };
 
-    const handleScan = async () => {
+    /*const handleScan = async () => {
         try {
             const response = await fetch('/api/v1/strongStocks/scan', {
                 method: 'POST',
@@ -59,22 +59,28 @@ const StrongStocksPage: React.FC = () => {
         } catch (err) {
             alert('触发扫描失败: ' + (err instanceof Error ? err.message : 'Unknown error'));
         }
-    };
+    };*/
 
     useEffect(() => {
         fetchStocks();
     }, [page]);
 
+    // 格式化日期，只保留 YYYY-MM-DD
+    const formatDate = (dateStr: string) => {
+        if (!dateStr) return '';
+        return dateStr.split('T')[0];
+    };
+
     return (
         <div className="min-h-screen flex flex-col p-6">
             <div className="flex justify-between items-center mb-6">
                 <h1 className="text-2xl font-bold text-white">强势股列表</h1>
-                <button
+                {/* <button
                     onClick={handleScan}
                     className="btn-primary flex items-center gap-1.5 whitespace-nowrap"
                 >
                     触发扫描
-                </button>
+                </button> */}
             </div>
 
             {error && (
@@ -91,7 +97,7 @@ const StrongStocksPage: React.FC = () => {
                                 <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">代码</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">名称</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">价格</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">市值</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">市值(亿)</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">市盈率</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">行业</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">策略匹配</th>
@@ -101,7 +107,7 @@ const StrongStocksPage: React.FC = () => {
                         <tbody className="divide-y divide-white/5">
                             {loading ? (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-8 text-center text-secondary">
+                                    <td colSpan={8} className="px-6 py-8 text-center text-secondary">
                                         <div className="flex justify-center items-center gap-2">
                                             <div className="w-4 h-4 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
                                             加载中...
@@ -110,7 +116,7 @@ const StrongStocksPage: React.FC = () => {
                                 </tr>
                             ) : stocks.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-8 text-center text-muted">暂无数据</td>
+                                    <td colSpan={8} className="px-6 py-8 text-center text-muted">暂无数据</td>
                                 </tr>
                             ) : (
                                 stocks.map((stock) => (
@@ -122,7 +128,7 @@ const StrongStocksPage: React.FC = () => {
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-white">{stock.pe_ratio}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-secondary">{stock.industry}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-secondary">{stock.strategy_match || stock.ai_analysis}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">{stock.date}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-muted">{formatDate(stock.date)}</td>
                                     </tr>
                                 ))
                             )}

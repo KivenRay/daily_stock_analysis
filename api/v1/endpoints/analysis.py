@@ -98,7 +98,16 @@ def trigger_analysis(
         HTTPException: 400 - 请求参数错误
         HTTPException: 409 - 股票正在分析中
         HTTPException: 500 - 分析失败
+        HTTPException: 501 - 禁止页面输入股票分析
     """
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "validation_error",
+            "message": "禁止页面输入股票分析"
+        }
+    )
+
     # 校验请求参数
     stock_codes = []
     if request.stock_code:

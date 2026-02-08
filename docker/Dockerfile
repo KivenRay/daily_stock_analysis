@@ -51,8 +51,8 @@ RUN mkdir -p /app/resource/data /app/resource/logs /app/resource/reports
 
 # 设置环境变量默认值
 ENV PYTHONUNBUFFERED=1
-ENV LOG_DIR=/app/logs
-ENV DATABASE_PATH=/app/data/stock_analysis.db
+ENV LOG_DIR=/app/resource/logs
+ENV DATABASE_PATH=/app/resource/data/stock_analysis.db
 # WebUI应用
 ENV WEBUI_HOST=0.0.0.0
 ENV WEBUI_PORT=8000
@@ -69,4 +69,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     || python -c "import sys; sys.exit(0)"
 
 # 默认命令（可被覆盖）
-CMD ["python", "main.py", " --webui-only"]
+CMD ["python", "main.py", "--serve"]

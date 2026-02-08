@@ -230,13 +230,14 @@ const HomePage: React.FC = () => {
           <div className="flex-1 relative">
             <input
               type="text"
+              readOnly={true}
               value={stockCode}
               onChange={(e) => {
                 setStockCode(e.target.value.toUpperCase());
                 setInputError(undefined);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="输入股票代码，如 600519、00700、AAPL"
+              placeholder="额度不足，禁止输入股票代码"
               disabled={isAnalyzing}
               className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
             />

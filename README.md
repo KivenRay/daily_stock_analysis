@@ -146,6 +146,13 @@ cp .env.example .env && vim .env
 python main.py
 ```
 
+```sh
+docker buildx build --platform linux/amd64 -t stock-analysis:1.0.1 --load .
+```
+```sh
+docker save -o stock-analysis.tar stock-analysis:1.0.1
+```
+
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
 
 ## 📱 推送效果

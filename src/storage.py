@@ -1146,6 +1146,163 @@ class DatabaseManager:
         digest = hashlib.md5(raw_key.encode("utf-8")).hexdigest()
         return f"no-url:{code}:{digest}"
 
+    def save_stock_info(self, df: pd.DataFrame) -> int:
+        """
+        保存股票基础信息到数据库
+
+        Args:
+            df: 包含股票信息的 DataFrame
+
+        Returns:
+            新增/更新的记录数
+        """
+        if df is None or df.empty:
+            return 0
+
+        saved_count = 0
+
+        with self.get_session() as session:
+            try:
+                for _, row in df.iterrows():
+                    ts_code = row.get('ts_code')
+                    if not ts_code:
+                        continue
+
+                    # 检查是否已存在
+                    existing = session.execute(
+                        select(StockInfo).where(StockInfo.ts_code == ts_code)
+                    ).scalar_one_or_none()
+
+                    if existing:
+                        # 更新
+                        for key, value in row.items():
+                            if hasattr(existing, key):
+                                setattr(existing, key, value)
+                        existing.updated_at = datetime.now()
+                    else:
+                        # 插入
+                        record = StockInfo(
+                            ts_code=ts_code,
+                            symbol=row.get('symbol'),
+                            name=row.get('name'),
+                            area=row.get('area'),
+                            industry=row.get('industry'),
+                            fullname=row.get('fullname'),
+                            enname=row.get('enname'),
+                            cnspell=row.get('cnspell'),
+                            market=row.get('market'),
+                            exchange=row.get('exchange'),
+                            curr_type=row.get('curr_type'),
+                            list_status=row.get('list_status'),
+                            list_date=row.get('list_date'),
+                            delist_date=row.get('delist_date'),
+                            is_hs=row.get('is_hs'),
+                            act_name=row.get('act_name'),
+                            act_ent_type=row.get('act_ent_type'),
+                        )
+                        session.add(record)
+                        saved_count += 1
+
+                session.commit()
+                logger.info(f"保存股票信息成功，新增 {saved_count} 条")
+
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存股票信息失败: {e}")
+                raise
+
+        return saved_count
+
+    def get_stock_info(self, symbol: Optional[str] = None, ts_code: Optional[str] = None, list_status: Optional[str] = None, market: Optional[Union[str, List[str]]] = None) -> List[StockInfo]:
+        """
+        查询股票信息
+
+        Args:
+            symbol: 股票代码（可选）
+            ts_code: TS代码（可选）
+            list_status: 上市状态（可选，L上市 D退市 P暂停上市）
+            market: 市场类型（可选，支持单个字符串或字符串列表，如 '主板', '创业板'）
+
+        Returns:
+            StockInfo 对象列表
+        """
+        with self.get_session() as session:
+            query = select(StockInfo)
+            if symbol:
+                query = query.where(StockInfo.symbol == symbol)
+            if ts_code:
+                query = query.where(StockInfo.ts_code == ts_code)
+            if list_status:
+                query = query.where(StockInfo.list_status == list_status)
+            if market:
+                if isinstance(market, list):
+                    query = query.where(StockInfo.market.in_(market))
+                else:
+                    query = query.where(StockInfo.market == market)
+
+            results = session.execute(query).scalars().all()
+            return list(results)
+
+    def save_strong_stock(self, data: Dict[str, Any]) -> bool:
+        """
+        保存强势股信息
+
+        Args:
+            data: 包含强势股信息的字典
+
+        Returns:
+            是否保存成功
+        """
+        code = data.get('code')
+        if not code:
+            return False
+
+        with self.get_session() as session:
+            try:
+                # 检查是否已存在
+                existing = session.execute(
+                    select(StrongStockInfo).where(StrongStockInfo.code == code)
+                ).scalar_one_or_none()
+
+                if existing:
+                    # 更新
+                    existing.name = data.get('name')
+                    existing.last_price = str(data.get('last_price'))
+                    existing.ma5 = str(data.get('ma5'))
+                    existing.ma10 = str(data.get('ma10'))
+                    existing.ma20 = str(data.get('ma20'))
+                    existing.industry = data.get('industry')
+                    existing.ai_analysis = data.get('ai_analysis')
+                    existing.strategy_match = data.get('strategy_match')
+                    existing.market_value = data.get('market_value')
+                    existing.pe_ratio = data.get('pe_ratio')
+                    existing.date = date.today()
+                    existing.updated_at = datetime.now()
+                else:
+                    # 插入
+                    record = StrongStockInfo(
+                        code=code,
+                        name=data.get('name'),
+                        last_price=str(data.get('last_price')),
+                        ma5=str(data.get('ma5')),
+                        ma10=str(data.get('ma10')),
+                        ma20=str(data.get('ma20')),
+                        industry=data.get('industry'),
+                        ai_analysis=data.get('ai_analysis'),
+                        strategy_match=data.get('strategy_match'),
+                        market_value=data.get('market_value'),
+                        pe_ratio=data.get('pe_ratio'),
+                        date=date.today()
+                    )
+                    session.add(record)
+
+                session.commit()
+                return True
+            except Exception as e:
+                session.rollback()
+                logger.error(f"保存强势股 {code} 失败: {e}")
+                return False
+
 
 # 便捷函数
 def get_db() -> DatabaseManager:

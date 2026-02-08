@@ -13,6 +13,8 @@ class StrongStock(BaseModel):
     industry: Optional[str] = None
     ai_analysis: Optional[str] = None
     strategy_match: Optional[str] = None
+    market_value: Optional[float] = None
+    pe_ratio: Optional[float] = None
     # 允许 date 或 datetime 类型，或者 None
     date: Optional[Union[date, datetime]] = None
 
